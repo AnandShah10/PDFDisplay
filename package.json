@@ -1,0 +1,60 @@
+{
+  "name": "pdfDisplay",
+  "displayName": "PDFDisplay",
+  "description": "A simple PDF viewer for VS Code",
+  "version": "0.0.1",
+  "publisher": "AnandShah",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnandShah10/PDFDisplay.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:pdfDisplay.openPdf",
+    "onCustomEditor:pdfDisplay.pdfViewer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pdfDisplay.openPdf",
+        "title": "PDF Display: View PDF"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "pdfDisplay.pdfViewer",
+        "displayName": "PDF Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.15",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.9.3"
+  },
+  "bugs": {
+    "url": "https://github.com/AnandShah10/PDFDisplay/issues"
+  },
+  "homepage": "https://github.com/AnandShah10/PDFDisplay#readme",
+  "dependencies": {
+    "fs": "^0.0.1-security",
+    "pdf-lib": "^1.17.1"
+  }
+}

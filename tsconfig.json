@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"module": "commonjs",
+		"target": "ES6",
+		"lib": [
+			"ES2022"
+		],
+		"sourceMap": true,
+		"outDir": "./out",
+        "rootDir": "./src",
+		"strict": true
+	},
+	 "include": [
+        "src/**/*.ts"
+    ],
+    "exclude": [
+        "node_modules"
+    ]
+}
