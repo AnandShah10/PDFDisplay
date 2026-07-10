@@ -1,0 +1,25 @@
+{
+  "files": [
+    "**",
+    "!*.map",
+    "!**/*.map",
+    "!**/.*",
+    "!**/.DS_Store",
+    "!**/.git",
+    "!**/.gitignore",
+    "!**/.vscodeignore",
+    "!**/*.vsix",
+    "!**/~*.*",
+    "!**/*~",
+    "!**/node_modules",
+    "!**/out/test",
+    "!**/*.ts",
+    "!README.md"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/out",
+    "**/test-results",
+    "**/.vscode-test"
+  ]
+}

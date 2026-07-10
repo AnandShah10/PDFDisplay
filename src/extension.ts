@@ -315,6 +315,71 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             display: block;
         }
 
+        .text-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            line-height: 1;
+            pointer-events: none; /* highlighting only for now; not wired up for text selection/copy yet */
+        }
+
+        .text-layer span {
+            position: absolute;
+            color: transparent;
+            white-space: pre;
+            transform-origin: 0% 0%;
+        }
+
+        .text-layer span.search-match {
+            background-color: rgba(255, 224, 0, 0.4);
+            border-radius: 2px;
+        }
+
+        .text-layer span.search-match-current {
+            background-color: rgba(255, 140, 0, 0.85);
+            border-radius: 2px;
+        }
+
+        #search-bar {
+            position: fixed;
+            top: 56px;
+            right: 20px;
+            background-color: var(--toolbar-bg);
+            border: 1px solid #444;
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 6px 8px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            z-index: 200;
+        }
+
+        #search-bar.hidden {
+            display: none;
+        }
+
+        #search-input {
+            background-color: #3c3f41;
+            border: 1px solid #555;
+            color: var(--text-color);
+            border-radius: 3px;
+            padding: 5px 8px;
+            font-size: 12px;
+            width: 180px;
+        }
+
+        #search-counter {
+            font-size: 12px;
+            color: #cccccc;
+            min-width: 56px;
+            text-align: center;
+            white-space: nowrap;
+        }
+
         #loading-overlay {
             position: fixed;
             top: 48px;
@@ -363,6 +428,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 <body>
     <div id="toolbar">
         <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
+        <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -377,6 +443,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="zoom-in" class="toolbar-btn" title="Zoom in" disabled>&plus;</button>
             <button id="zoom-fit-width" class="toolbar-btn text-btn" title="Fit width" disabled>Fit Width</button>
         </div>
+    </div>
+
+    <div id="search-bar" class="hidden">
+        <input id="search-input" type="text" placeholder="Find in document" />
+        <span id="search-counter"></span>
+        <button id="search-prev" class="toolbar-btn" title="Previous match">&#9650;</button>
+        <button id="search-next" class="toolbar-btn" title="Next match">&#9660;</button>
+        <button id="search-close" class="toolbar-btn" title="Close">&times;</button>
     </div>
 
     <div id="loading-overlay">
@@ -398,6 +472,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         const toggleSidebarBtn = document.getElementById('toggle-sidebar');
         const thumbnailSidebar = document.getElementById('thumbnail-sidebar');
+
+        const toggleSearchBtn = document.getElementById('toggle-search');
+        const searchBar = document.getElementById('search-bar');
+        const searchInput = document.getElementById('search-input');
+        const searchCounterEl = document.getElementById('search-counter');
+        const searchPrevBtn = document.getElementById('search-prev');
+        const searchNextBtn = document.getElementById('search-next');
+        const searchCloseBtn = document.getElementById('search-close');
 
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
@@ -449,6 +531,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let thumbRenderObserver = null;
         const THUMB_WIDTH = 100;
 
+        // ---- Search state ---------------------------------------------------
+        const pageTextCache = new Map(); // pageNum -> pdf.js textContent, extracted once per page
+        let searchQuery = '';
+        let searchToken = 0;             // race-guard: a stale in-flight search checks this before continuing
+        let searchInProgress = false;
+        let matches = [];                // { pageNum, itemIndex }[]
+        let currentMatchIndex = -1;
+
         function updateZoomLabel() {
             zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
         }
@@ -462,7 +552,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -613,10 +703,44 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
                 const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined;
                 await page.render({ canvasContext: context, viewport, transform }).promise;
+
+                // Invisible text layer, positioned to match the canvas at this scale,
+                // used for search highlighting (not wired up for text selection yet).
+                const textContent = await getPageText(pageNum);
+                buildTextLayer(pageContainer, textContent, viewport);
+                if (searchQuery) {
+                    applyHighlightForPage(pageNum);
+                }
             } catch (err) {
                 pageContainer.textContent = 'Failed to render page ' + pageNum;
                 pageContainer.style.color = '#ff4d4d';
             }
+        }
+
+        function buildTextLayer(pageContainer, textContent, viewport) {
+            const textLayerDiv = document.createElement('div');
+            textLayerDiv.className = 'text-layer';
+
+            textContent.items.forEach((item, idx) => {
+                if (!item.str) return;
+                // Standard pdf.js text-layer math: combine the item's own transform
+                // with the page viewport transform to get its on-screen position.
+                // (Assumes an unrotated page, which covers the vast majority of PDFs.)
+                const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                const fontHeight = Math.hypot(tx[2], tx[3]);
+                const left = tx[4];
+                const top = tx[5] - fontHeight;
+
+                const span = document.createElement('span');
+                span.textContent = item.str;
+                span.dataset.itemIndex = String(idx);
+                span.style.left = left + 'px';
+                span.style.top = top + 'px';
+                span.style.fontSize = fontHeight + 'px';
+                textLayerDiv.appendChild(span);
+            });
+
+            pageContainer.appendChild(textLayerDiv);
         }
 
         // Builds (or rebuilds, on zoom change) the placeholder containers for every
@@ -687,6 +811,168 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             const naturalViewport = firstPage.getViewport({ scale: 1 });
             const availableWidth = container.clientWidth - 48; // leave a little breathing room
             applyZoom(availableWidth / naturalViewport.width);
+        });
+
+        // ---- Search -----------------------------------------------------------
+
+        async function getPageText(pageNum) {
+            if (pageTextCache.has(pageNum)) return pageTextCache.get(pageNum);
+            const page = await pdfDoc.getPage(pageNum);
+            const textContent = await page.getTextContent();
+            pageTextCache.set(pageNum, textContent);
+            return textContent;
+        }
+
+        function clearAllHighlights() {
+            container.querySelectorAll('.text-layer span.search-match, .text-layer span.search-match-current')
+                .forEach(s => s.classList.remove('search-match', 'search-match-current'));
+        }
+
+        // Applies highlight classes to whatever spans currently exist for a page
+        // (only rendered pages have a text layer at all - unrendered pages get
+        // caught up automatically since renderPage() calls this itself once its
+        // text layer is built, see renderPage above).
+        function applyHighlightForPage(pageNum) {
+            const pageContainer = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
+            const textLayer = pageContainer && pageContainer.querySelector('.text-layer');
+            if (!textLayer) return;
+
+            matches.forEach((m, i) => {
+                if (m.pageNum !== pageNum) return;
+                const span = textLayer.querySelector('span[data-item-index="' + m.itemIndex + '"]');
+                if (!span) return;
+                span.classList.add('search-match');
+                span.classList.toggle('search-match-current', i === currentMatchIndex);
+            });
+        }
+
+        function updateSearchCounter() {
+            if (!searchQuery) {
+                searchCounterEl.textContent = '';
+            } else if (matches.length === 0) {
+                searchCounterEl.textContent = searchInProgress ? 'Searching…' : 'No results';
+            } else {
+                searchCounterEl.textContent = (currentMatchIndex + 1) + ' of ' + matches.length + (searchInProgress ? '+' : '');
+            }
+        }
+
+        // Forces a specific (possibly not-yet-scrolled-to) page to render immediately,
+        // bypassing the lazy IntersectionObserver, so a search match on it can be
+        // highlighted and scrolled to right away.
+        async function ensurePageRendered(pageNum) {
+            const pageContainer = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
+            if (!pageContainer || pageContainer.querySelector('canvas')) return;
+            if (lazyRenderObserver) lazyRenderObserver.unobserve(pageContainer);
+            const dpr = window.devicePixelRatio || 1;
+            await renderPage(pageContainer, dpr);
+        }
+
+        async function goToMatch(index) {
+            if (matches.length === 0) return;
+            currentMatchIndex = ((index % matches.length) + matches.length) % matches.length;
+            updateSearchCounter();
+
+            const match = matches[currentMatchIndex];
+            await ensurePageRendered(match.pageNum);
+            clearAllHighlights();
+            // Re-apply highlights for every page that currently has a text layer,
+            // not just the target page, so earlier matches stay visibly marked too.
+            const renderedPages = new Set(matches.map(m => m.pageNum));
+            renderedPages.forEach(applyHighlightForPage);
+
+            const pageContainer = container.querySelector('.page-container[data-page-number="' + match.pageNum + '"]');
+            const textLayer = pageContainer && pageContainer.querySelector('.text-layer');
+            const span = textLayer && textLayer.querySelector('span[data-item-index="' + match.itemIndex + '"]');
+            if (span) {
+                span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else {
+                scrollToPage(match.pageNum);
+            }
+        }
+
+        async function runSearch(query) {
+            const myToken = ++searchToken;
+            searchQuery = query.trim();
+            matches = [];
+            currentMatchIndex = -1;
+            clearAllHighlights();
+            updateSearchCounter();
+
+            if (!searchQuery || !pdfDoc) return;
+
+            searchInProgress = true;
+            const lowerQuery = searchQuery.toLowerCase();
+
+            for (let p = 1; p <= totalPages; p++) {
+                if (myToken !== searchToken) return; // a newer search superseded this one
+                const textContent = await getPageText(p);
+                textContent.items.forEach((item, idx) => {
+                    if (item.str && item.str.toLowerCase().includes(lowerQuery)) {
+                        matches.push({ pageNum: p, itemIndex: idx });
+                    }
+                });
+                applyHighlightForPage(p); // no-op if page isn't rendered yet
+                updateSearchCounter();
+            }
+
+            if (myToken !== searchToken) return;
+            searchInProgress = false;
+
+            if (matches.length > 0) {
+                goToMatch(0);
+            } else {
+                updateSearchCounter();
+            }
+        }
+
+        let searchDebounceTimer = null;
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => runSearch(searchInput.value), 300);
+        });
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                clearTimeout(searchDebounceTimer);
+                if (searchQuery === searchInput.value.trim() && matches.length > 0) {
+                    goToMatch(currentMatchIndex + (e.shiftKey ? -1 : 1));
+                } else {
+                    runSearch(searchInput.value);
+                }
+            } else if (e.key === 'Escape') {
+                closeSearch();
+            }
+        });
+        searchPrevBtn.addEventListener('click', () => goToMatch(currentMatchIndex - 1));
+        searchNextBtn.addEventListener('click', () => goToMatch(currentMatchIndex + 1));
+        searchCloseBtn.addEventListener('click', closeSearch);
+
+        function openSearch() {
+            searchBar.classList.remove('hidden');
+            searchInput.focus();
+            searchInput.select();
+        }
+
+        function closeSearch() {
+            searchBar.classList.add('hidden');
+            searchInput.value = '';
+            runSearch('');
+        }
+
+        toggleSearchBtn.addEventListener('click', () => {
+            if (searchBar.classList.contains('hidden')) {
+                openSearch();
+            } else {
+                closeSearch();
+            }
+        });
+
+        // Ctrl/Cmd+F opens the in-document search instead of the browser's own find.
+        window.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !toggleSearchBtn.disabled) {
+                e.preventDefault();
+                openSearch();
+            }
         });
 
         async function renderPdf(bytes) {
