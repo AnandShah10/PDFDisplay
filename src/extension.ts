@@ -120,9 +120,19 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     <script nonce="${nonce}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style nonce="${nonce}">
         :root {
-            --bg-color: #2b2b2b;
-            --toolbar-bg: #323639;
-            --text-color: #ffffff;
+            /* VS Code injects --vscode-* custom properties into every webview and
+               updates them live when the user switches themes/color schemes - no
+               reload or JS needed. Falling back to our original dark palette keeps
+               this looking identical to before if any variable is ever unavailable. */
+            --bg-color: var(--vscode-editor-background, #2b2b2b);
+            --toolbar-bg: var(--vscode-titleBar-activeBackground, var(--vscode-sideBar-background, #323639));
+            --text-color: var(--vscode-editor-foreground, #ffffff);
+            --muted-text-color: var(--vscode-descriptionForeground, #cccccc);
+            --border-color: var(--vscode-panel-border, #444444);
+            --input-bg: var(--vscode-input-background, #3c3f41);
+            --input-border: var(--vscode-input-border, #555555);
+            --hover-bg: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.12));
+            --accent-color: var(--vscode-progressBar-background, #007acc);
             --shadow: 0 4px 12px rgba(0,0,0,0.5);
         }
 
@@ -186,7 +196,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         .toolbar-btn:hover:not(:disabled) {
-            background-color: rgba(255,255,255,0.12);
+            background-color: var(--hover-bg);
         }
 
         .toolbar-btn:disabled {
@@ -202,8 +212,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         #page-input {
             width: 40px;
-            background-color: #3c3f41;
-            border: 1px solid #555;
+            background-color: var(--input-bg);
+            border: 1px solid var(--input-border);
             color: var(--text-color);
             border-radius: 3px;
             text-align: center;
@@ -222,7 +232,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         .page-sep, #zoom-level {
             font-size: 12px;
-            color: #cccccc;
+            color: var(--muted-text-color);
             white-space: nowrap;
             min-width: 40px;
             text-align: center;
@@ -237,8 +247,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         #thumbnail-sidebar {
             width: 132px;
             flex-shrink: 0;
-            background-color: #252526;
-            border-right: 1px solid #1e1e1e;
+            background-color: var(--vscode-sideBar-background, #252526);
+            border-right: 1px solid var(--border-color);
             overflow-y: auto;
             padding: 14px 0;
             display: flex;
@@ -271,11 +281,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         .thumb-container.active {
-            border-color: #007acc;
+            border-color: var(--accent-color);
         }
 
         .thumb-placeholder {
-            background-color: #3c3c3c;
+            background-color: var(--vscode-editorWidget-background, #3c3c3c);
         }
 
         .thumb-page-number {
@@ -312,7 +322,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         .page-placeholder {
-            background-color: #3c3c3c;
+            background-color: var(--vscode-editorWidget-background, #3c3c3c);
         }
 
         canvas {
@@ -341,17 +351,17 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         .text-layer span.search-match {
-            background-color: rgba(255, 224, 0, 0.4);
+            background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 224, 0, 0.4));
             border-radius: 2px;
         }
 
         .text-layer span.search-match-current {
-            background-color: rgba(255, 140, 0, 0.85);
+            background-color: var(--vscode-editor-findMatchBackground, rgba(255, 140, 0, 0.85));
             border-radius: 2px;
         }
 
         .toolbar-btn.active {
-            background-color: rgba(0, 122, 204, 0.45);
+            background-color: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.45));
         }
 
         #viewer-container.annotate-cursor {
@@ -384,7 +394,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             width: 220px;
             box-sizing: border-box;
             background-color: var(--toolbar-bg);
-            border: 1px solid #444;
+            border: 1px solid var(--border-color);
             border-radius: 6px;
             box-shadow: var(--shadow);
             padding: 10px;
@@ -404,8 +414,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             width: 100%;
             box-sizing: border-box;
             min-height: 60px;
-            background-color: #3c3f41;
-            border: 1px solid #555;
+            background-color: var(--input-bg);
+            border: 1px solid var(--input-border);
             color: var(--text-color);
             border-radius: 3px;
             padding: 6px;
@@ -430,7 +440,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             top: 56px;
             right: 20px;
             background-color: var(--toolbar-bg);
-            border: 1px solid #444;
+            border: 1px solid var(--border-color);
             border-radius: 6px;
             box-shadow: var(--shadow);
             padding: 6px 8px;
@@ -445,8 +455,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         #search-input {
-            background-color: #3c3f41;
-            border: 1px solid #555;
+            background-color: var(--input-bg);
+            border: 1px solid var(--input-border);
             color: var(--text-color);
             border-radius: 3px;
             padding: 5px 8px;
@@ -456,7 +466,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         #search-counter {
             font-size: 12px;
-            color: #cccccc;
+            color: var(--muted-text-color);
             min-width: 56px;
             text-align: center;
             white-space: nowrap;
@@ -480,7 +490,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             width: 40px;
             height: 40px;
             border: 4px solid rgba(255,255,255,0.1);
-            border-top: 4px solid #007acc;
+            border-top: 4px solid var(--accent-color);
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin-bottom: 16px;
@@ -495,15 +505,15 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             width: 12px;
         }
         ::-webkit-scrollbar-track {
-            background: #2b2b2b;
+            background: var(--bg-color);
         }
         ::-webkit-scrollbar-thumb {
-            background: #555;
-            border: 3px solid #2b2b2b;
+            background: var(--vscode-scrollbarSlider-background, #555);
+            border: 3px solid var(--bg-color);
             border-radius: 10px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #888;
+            background: var(--vscode-scrollbarSlider-hoverBackground, #888);
         }
     </style>
 </head>
@@ -578,7 +588,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         function showError(message) {
             loadingText.innerHTML = '';
             loadingText.textContent = 'Failed to load PDF: ' + message;
-            loadingText.style.color = '#ff4d4d';
+            loadingText.style.color = 'var(--vscode-errorForeground, #ff4d4d)';
             const spinner = document.querySelector('.spinner');
             if (spinner) spinner.style.display = 'none';
             loadingOverlay.style.display = 'flex';
@@ -807,7 +817,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 buildAnnotationLayer(pageContainer, pageNum, viewport);
             } catch (err) {
                 pageContainer.textContent = 'Failed to render page ' + pageNum;
-                pageContainer.style.color = '#ff4d4d';
+                pageContainer.style.color = 'var(--vscode-errorForeground, #ff4d4d)';
             }
         }
 
