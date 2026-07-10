@@ -58,9 +58,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const fileName = escapeHtml(vscode.workspace.asRelativePath(document.uri, false).split(/[\\/]/).pop() ?? 'document.pdf');
         const nonce = getNonce();
 
-        // Load and send the PDF bytes via postMessage instead of embedding a giant
-        // base64 string inline in the HTML (smaller payload, no huge string literal,
-        // avoids holding the file in memory 2-3x over).
+        // Load and send the PDF bytes (+ any previously saved annotations) via
+        // postMessage instead of embedding a giant base64 string inline in the
+        // HTML (smaller payload, no huge string literal, avoids holding the file
+        // in memory 2-3x over).
         const loadAndSend = async () => {
             try {
                 const bytes = await vscode.workspace.fs.readFile(document.uri); // async, non-blocking
@@ -72,7 +73,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     // plain-object shape outright ("Invalid PDF binary data..."), so
                     // send a definite plain number array instead and rebuild a real
                     // Uint8Array on the webview side - this works the same everywhere.
-                    data: Array.from(bytes)
+                    data: Array.from(bytes),
+                    annotations: getStoredAnnotations(this.context, document.uri)
                 });
             } catch (err: any) {
                 webviewPanel.webview.postMessage({
@@ -91,6 +93,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.onDidReceiveMessage(msg => {
             if (msg?.type === 'ready') {
                 loadAndSend();
+            } else if (msg?.type === 'save-annotations') {
+                // Sticky-note annotations, persisted in the extension's own
+                // storage (VS Code globalState) rather than a sidecar file or
+                // the PDF itself, keyed per-document so they survive reloads.
+                storeAnnotations(this.context, document.uri, Array.isArray(msg.annotations) ? msg.annotations : []);
             }
         });
 
@@ -343,6 +350,81 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             border-radius: 2px;
         }
 
+        .toolbar-btn.active {
+            background-color: rgba(0, 122, 204, 0.45);
+        }
+
+        #viewer-container.annotate-cursor {
+            cursor: crosshair;
+        }
+
+        .annotation-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .annotation-pin {
+            position: absolute;
+            transform: translate(-50%, -100%);
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+            pointer-events: auto;
+            user-select: none;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+        }
+
+        .annotation-popup {
+            position: fixed;
+            z-index: 500;
+            width: 220px;
+            box-sizing: border-box;
+            background-color: var(--toolbar-bg);
+            border: 1px solid #444;
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 10px;
+            font-size: 12px;
+            color: var(--text-color);
+        }
+
+        .annotation-popup-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 160px;
+            overflow-y: auto;
+            margin-bottom: 8px;
+        }
+
+        .annotation-popup-textarea {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 60px;
+            background-color: #3c3f41;
+            border: 1px solid #555;
+            color: var(--text-color);
+            border-radius: 3px;
+            padding: 6px;
+            font-size: 12px;
+            font-family: inherit;
+            resize: vertical;
+            margin-bottom: 8px;
+        }
+
+        .annotation-popup-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+        }
+
+        .annotation-popup-actions .toolbar-btn.text-btn {
+            background-color: rgba(255,255,255,0.08);
+        }
+
         #search-bar {
             position: fixed;
             top: 56px;
@@ -429,6 +511,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     <div id="toolbar">
         <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
         <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
+        <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -480,6 +563,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const searchPrevBtn = document.getElementById('search-prev');
         const searchNextBtn = document.getElementById('search-next');
         const searchCloseBtn = document.getElementById('search-close');
+
+        const toggleAnnotateBtn = document.getElementById('toggle-annotate');
 
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
@@ -539,6 +624,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let matches = [];                // { pageNum, itemIndex }[]
         let currentMatchIndex = -1;
 
+        // ---- Annotation state -------------------------------------------------
+        let annotations = [];            // { id, pageNum, xRatio, yRatio, text, createdAt }[], from extension storage
+        let annotateMode = false;
+        let activeAnnotationPopup = null;
+
         function updateZoomLabel() {
             zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
         }
@@ -552,7 +642,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -711,6 +801,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 if (searchQuery) {
                     applyHighlightForPage(pageNum);
                 }
+
+                // Sticky-note pins for this page, positioned from their stored
+                // ratio-of-page coordinates so they land correctly at any zoom level.
+                buildAnnotationLayer(pageContainer, pageNum, viewport);
             } catch (err) {
                 pageContainer.textContent = 'Failed to render page ' + pageNum;
                 pageContainer.style.color = '#ff4d4d';
@@ -972,7 +1066,199 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !toggleSearchBtn.disabled) {
                 e.preventDefault();
                 openSearch();
+            } else if (e.key === 'Escape' && activeAnnotationPopup) {
+                closeAnnotationPopup();
             }
+        });
+
+        // ---- Sticky-note annotations -------------------------------------------
+        // Persisted via postMessage to the extension host, which stores them in
+        // VS Code's globalState keyed per-document (see storeAnnotations in
+        // extension.ts), so they survive closing and reopening the file.
+
+        function createAnnotationId() {
+            return 'ann_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+        }
+
+        function persistAnnotations() {
+            vscodeApi.postMessage({ type: 'save-annotations', annotations });
+        }
+
+        function pinPosition(annotation, viewport) {
+            return {
+                left: annotation.xRatio * viewport.width,
+                top: annotation.yRatio * viewport.height
+            };
+        }
+
+        function createPinElement(annotation, viewport) {
+            const pin = document.createElement('div');
+            pin.className = 'annotation-pin';
+            pin.dataset.annotationId = annotation.id;
+            const pos = pinPosition(annotation, viewport);
+            pin.style.left = pos.left + 'px';
+            pin.style.top = pos.top + 'px';
+            pin.textContent = '📌';
+            pin.title = annotation.text;
+            pin.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openAnnotationPopup(annotation, pin, 'view');
+            });
+            return pin;
+        }
+
+        // Rebuilt every time a page renders (including on zoom changes), same
+        // pattern as the text layer - pins are positioned from a page-relative
+        // ratio so they land correctly at any scale.
+        function buildAnnotationLayer(pageContainer, pageNum, viewport) {
+            const layer = document.createElement('div');
+            layer.className = 'annotation-layer';
+            annotations
+                .filter(a => a.pageNum === pageNum)
+                .forEach(a => layer.appendChild(createPinElement(a, viewport)));
+            pageContainer.appendChild(layer);
+            return layer;
+        }
+
+        function closeAnnotationPopup() {
+            if (activeAnnotationPopup) {
+                activeAnnotationPopup.remove();
+                activeAnnotationPopup = null;
+            }
+        }
+
+        function deleteAnnotation(id) {
+            const idx = annotations.findIndex(a => a.id === id);
+            if (idx !== -1) annotations.splice(idx, 1);
+            document.querySelectorAll('.annotation-pin[data-annotation-id="' + id + '"]').forEach(p => p.remove());
+            persistAnnotations();
+            closeAnnotationPopup();
+        }
+
+        // mode: 'view' (read existing note) | 'edit' (editing existing note) | 'new' (creating one)
+        function openAnnotationPopup(annotation, pinEl, mode) {
+            closeAnnotationPopup();
+
+            const rect = pinEl.getBoundingClientRect();
+            const popup = document.createElement('div');
+            popup.className = 'annotation-popup';
+            popup.style.left = Math.max(8, Math.min(window.innerWidth - 236, rect.left)) + 'px';
+            popup.style.top = (rect.bottom + 6) + 'px';
+            popup.addEventListener('click', (e) => e.stopPropagation());
+
+            if (mode === 'view') {
+                const textEl = document.createElement('div');
+                textEl.className = 'annotation-popup-text';
+                textEl.textContent = annotation.text;
+                popup.appendChild(textEl);
+
+                const actions = document.createElement('div');
+                actions.className = 'annotation-popup-actions';
+
+                const editBtn = document.createElement('button');
+                editBtn.className = 'toolbar-btn text-btn';
+                editBtn.textContent = 'Edit';
+                editBtn.addEventListener('click', () => openAnnotationPopup(annotation, pinEl, 'edit'));
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'toolbar-btn text-btn';
+                deleteBtn.textContent = 'Delete';
+                deleteBtn.addEventListener('click', () => deleteAnnotation(annotation.id));
+
+                actions.appendChild(editBtn);
+                actions.appendChild(deleteBtn);
+                popup.appendChild(actions);
+            } else {
+                const textarea = document.createElement('textarea');
+                textarea.className = 'annotation-popup-textarea';
+                textarea.placeholder = 'Add a note…';
+                textarea.value = mode === 'edit' ? annotation.text : '';
+                popup.appendChild(textarea);
+
+                const actions = document.createElement('div');
+                actions.className = 'annotation-popup-actions';
+
+                const saveBtn = document.createElement('button');
+                saveBtn.className = 'toolbar-btn text-btn';
+                saveBtn.textContent = 'Save';
+                saveBtn.addEventListener('click', () => {
+                    const value = textarea.value.trim();
+                    if (!value) {
+                        if (mode === 'new') pinEl.remove(); // discard empty note, never persisted
+                        closeAnnotationPopup();
+                        return;
+                    }
+                    annotation.text = value;
+                    pinEl.title = value;
+                    if (mode === 'new') annotations.push(annotation);
+                    persistAnnotations();
+                    closeAnnotationPopup();
+                });
+
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'toolbar-btn text-btn';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.addEventListener('click', () => {
+                    if (mode === 'new') pinEl.remove(); // was never added to the annotations array, just drop the pin
+                    closeAnnotationPopup();
+                });
+
+                actions.appendChild(saveBtn);
+                actions.appendChild(cancelBtn);
+                popup.appendChild(actions);
+                setTimeout(() => textarea.focus(), 0);
+            }
+
+            document.body.appendChild(popup);
+            activeAnnotationPopup = popup;
+        }
+
+        // Click anywhere outside the popup dismisses it (pin clicks stopPropagation
+        // above, so re-opening a pin's own popup doesn't immediately close it here).
+        document.addEventListener('click', (e) => {
+            if (activeAnnotationPopup && !activeAnnotationPopup.contains(e.target)) {
+                closeAnnotationPopup();
+            }
+        });
+
+        function setAnnotateMode(value) {
+            annotateMode = value;
+            toggleAnnotateBtn.classList.toggle('active', value);
+            container.classList.toggle('annotate-cursor', value);
+        }
+
+        toggleAnnotateBtn.addEventListener('click', () => setAnnotateMode(!annotateMode));
+
+        // Delegated click handler: placing a new note. Pins themselves stopPropagation
+        // so this only fires for clicks on empty page area while annotate mode is on.
+        container.addEventListener('click', async (e) => {
+            if (!annotateMode) return;
+            const pageContainer = e.target.closest('.page-container');
+            if (!pageContainer) return;
+
+            const pageNum = Number(pageContainer.dataset.pageNumber);
+            await ensurePageRendered(pageNum);
+
+            const rect = pageContainer.getBoundingClientRect();
+            const xRatio = (e.clientX - rect.left) / rect.width;
+            const yRatio = (e.clientY - rect.top) / rect.height;
+
+            const annotation = { id: createAnnotationId(), pageNum, xRatio, yRatio, text: '', createdAt: Date.now() };
+            const page = await pdfDoc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: currentScale });
+
+            let layer = pageContainer.querySelector('.annotation-layer');
+            if (!layer) {
+                layer = document.createElement('div');
+                layer.className = 'annotation-layer';
+                pageContainer.appendChild(layer);
+            }
+            const pin = createPinElement(annotation, viewport);
+            layer.appendChild(pin);
+            openAnnotationPopup(annotation, pin, 'new');
+
+            setAnnotateMode(false); // one note per activation keeps this predictable
+            e.stopPropagation(); // don't let the document-level "click outside" listener close the popup we just opened
         });
 
         async function renderPdf(bytes) {
@@ -1009,6 +1295,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             const msg = event.data;
             if (msg.type === 'pdf-data') {
                 pdfDataReceived = true;
+                annotations = Array.isArray(msg.annotations) ? msg.annotations : [];
                 renderPdf(msg.data);
             } else if (msg.type === 'pdf-error') {
                 pdfDataReceived = true;
@@ -1036,6 +1323,18 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 </body>
 </html>`;
     }
+}
+
+function getAnnotationsStorageKey(uri: vscode.Uri): string {
+    return 'pdfDisplay.annotations:' + uri.toString();
+}
+
+function getStoredAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri): unknown[] {
+    return context.globalState.get(getAnnotationsStorageKey(uri), []);
+}
+
+function storeAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri, annotations: unknown[]): Thenable<void> {
+    return context.globalState.update(getAnnotationsStorageKey(uri), annotations);
 }
 
 function escapeHtml(value: string): string {
