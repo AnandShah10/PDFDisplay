@@ -149,7 +149,76 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 400px;
+            max-width: 300px;
+        }
+
+        .toolbar-spacer {
+            flex: 1;
+        }
+
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: 18px;
+        }
+
+        .toolbar-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-color);
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            font-size: 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+
+        .toolbar-btn:hover:not(:disabled) {
+            background-color: rgba(255,255,255,0.12);
+        }
+
+        .toolbar-btn:disabled {
+            opacity: 0.35;
+            cursor: default;
+        }
+
+        .toolbar-btn.text-btn {
+            width: auto;
+            padding: 0 10px;
+            font-size: 12px;
+        }
+
+        #page-input {
+            width: 40px;
+            background-color: #3c3f41;
+            border: 1px solid #555;
+            color: var(--text-color);
+            border-radius: 3px;
+            text-align: center;
+            font-size: 12px;
+            padding: 4px 2px;
+        }
+        /* hide number input spin arrows for a cleaner toolbar look */
+        #page-input::-webkit-outer-spin-button,
+        #page-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        #page-input {
+            -moz-appearance: textfield;
+        }
+
+        .page-sep, #zoom-level {
+            font-size: 12px;
+            color: #cccccc;
+            white-space: nowrap;
+            min-width: 40px;
+            text-align: center;
         }
 
         #viewer-container {
@@ -231,6 +300,19 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 <body>
     <div id="toolbar">
         <div class="title">📄 ${fileName}</div>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-group" id="page-nav">
+            <button id="prev-page" class="toolbar-btn" title="Previous page" disabled>&#9650;</button>
+            <input id="page-input" type="number" min="1" value="1" disabled />
+            <span class="page-sep">/ <span id="page-count">&ndash;</span></span>
+            <button id="next-page" class="toolbar-btn" title="Next page" disabled>&#9660;</button>
+        </div>
+        <div class="toolbar-group" id="zoom-controls">
+            <button id="zoom-out" class="toolbar-btn" title="Zoom out" disabled>&minus;</button>
+            <span id="zoom-level">100%</span>
+            <button id="zoom-in" class="toolbar-btn" title="Zoom in" disabled>&plus;</button>
+            <button id="zoom-fit-width" class="toolbar-btn text-btn" title="Fit width" disabled>Fit Width</button>
+        </div>
     </div>
 
     <div id="loading-overlay">
@@ -246,6 +328,15 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const container = document.getElementById('viewer-container');
         const loadingOverlay = document.getElementById('loading-overlay');
         const loadingText = document.getElementById('loading-text');
+
+        const prevPageBtn = document.getElementById('prev-page');
+        const nextPageBtn = document.getElementById('next-page');
+        const pageInput = document.getElementById('page-input');
+        const pageCountEl = document.getElementById('page-count');
+        const zoomOutBtn = document.getElementById('zoom-out');
+        const zoomInBtn = document.getElementById('zoom-in');
+        const zoomFitWidthBtn = document.getElementById('zoom-fit-width');
+        const zoomLevelEl = document.getElementById('zoom-level');
 
         function showError(message) {
             loadingText.innerHTML = '';
@@ -273,30 +364,77 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             showError((err && err.message) || String(err));
         }
 
+        // ---- Shared state -------------------------------------------------
+        let pdfDoc = null;          // the loaded PDFDocumentProxy, reused across zoom re-renders
+        let totalPages = 0;
+        let currentPage = 1;
+        let currentScale = 1.5;     // pdf.js viewport scale; BASE_SCALE below maps this to "100%"
+        const BASE_SCALE = 1.5;
+        const MIN_SCALE = 0.375;    // ~25%
+        const MAX_SCALE = 6.0;      // ~400%
+        const ZOOM_STEP = BASE_SCALE * 0.1; // 10% per click
+
+        let lazyRenderObserver = null;
+        let currentPageObserver = null;
+
+        function updateZoomLabel() {
+            zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
+        }
+
+        function updatePageControls() {
+            pageInput.value = String(currentPage);
+            pageCountEl.textContent = String(totalPages);
+            prevPageBtn.disabled = currentPage <= 1;
+            nextPageBtn.disabled = currentPage >= totalPages;
+        }
+
+        function enableToolbar() {
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn].forEach(el => el.disabled = false);
+        }
+
+        function clampScale(scale) {
+            return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+        }
+
         // Lazily render pages as they scroll into view instead of rendering
         // every page up front (avoids freezing the UI on large documents).
-        function setupLazyRendering(pdf) {
+        function setupLazyRendering() {
             const dpr = window.devicePixelRatio || 1;
-            const baseScale = 1.5;
-
             const observer = new IntersectionObserver((entries) => {
                 for (const entry of entries) {
                     if (entry.isIntersecting) {
                         const pageContainer = entry.target;
                         observer.unobserve(pageContainer);
-                        renderPage(pdf, pageContainer, baseScale, dpr);
+                        renderPage(pageContainer, dpr);
                     }
                 }
             }, { root: container, rootMargin: '400px 0px' });
-
             return observer;
         }
 
-        async function renderPage(pdf, pageContainer, baseScale, dpr) {
+        // Tracks which page is most visible so the toolbar's page indicator
+        // stays in sync while the user scrolls (not just when they click nav buttons).
+        function setupCurrentPageTracking() {
+            const observer = new IntersectionObserver((entries) => {
+                let best = null;
+                for (const entry of entries) {
+                    if (entry.isIntersecting && (!best || entry.intersectionRatio > best.intersectionRatio)) {
+                        best = entry;
+                    }
+                }
+                if (best) {
+                    currentPage = Number(best.target.dataset.pageNumber);
+                    updatePageControls();
+                }
+            }, { root: container, threshold: [0, 0.25, 0.5, 0.75, 1] });
+            return observer;
+        }
+
+        async function renderPage(pageContainer, dpr) {
             const pageNum = Number(pageContainer.dataset.pageNumber);
             try {
-                const page = await pdf.getPage(pageNum);
-                const viewport = page.getViewport({ scale: baseScale });
+                const page = await pdfDoc.getPage(pageNum);
+                const viewport = page.getViewport({ scale: currentScale });
 
                 const canvas = document.createElement('canvas');
                 const context = canvas.getContext('2d');
@@ -319,6 +457,76 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             }
         }
 
+        // Builds (or rebuilds, on zoom change) the placeholder containers for every
+        // page at the current scale and wires up lazy-render + current-page tracking.
+        async function layoutPages() {
+            if (lazyRenderObserver) lazyRenderObserver.disconnect();
+            if (currentPageObserver) currentPageObserver.disconnect();
+            container.innerHTML = '';
+
+            lazyRenderObserver = setupLazyRendering();
+            currentPageObserver = setupCurrentPageTracking();
+
+            for (let i = 1; i <= totalPages; i++) {
+                const page = await pdfDoc.getPage(i);
+                const viewport = page.getViewport({ scale: currentScale });
+
+                const pageContainer = document.createElement('div');
+                pageContainer.className = 'page-container page-placeholder';
+                pageContainer.dataset.pageNumber = String(i);
+                pageContainer.style.width = viewport.width + 'px';
+                pageContainer.style.height = viewport.height + 'px';
+
+                container.appendChild(pageContainer);
+                lazyRenderObserver.observe(pageContainer);
+                currentPageObserver.observe(pageContainer);
+            }
+        }
+
+        function scrollToPage(pageNum) {
+            pageNum = Math.min(totalPages, Math.max(1, pageNum));
+            const target = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                currentPage = pageNum;
+                updatePageControls();
+            }
+        }
+
+        async function applyZoom(newScale) {
+            currentScale = clampScale(newScale);
+            updateZoomLabel();
+            const pageToRestore = currentPage;
+            await layoutPages();
+            // Re-center on roughly the same page after rebuilding at the new scale.
+            const target = container.querySelector('.page-container[data-page-number="' + pageToRestore + '"]');
+            if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
+        }
+
+        prevPageBtn.addEventListener('click', () => scrollToPage(currentPage - 1));
+        nextPageBtn.addEventListener('click', () => scrollToPage(currentPage + 1));
+        pageInput.addEventListener('change', () => {
+            const n = parseInt(pageInput.value, 10);
+            if (!isNaN(n)) {
+                scrollToPage(n);
+            } else {
+                pageInput.value = String(currentPage);
+            }
+        });
+        pageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') pageInput.blur();
+        });
+
+        zoomInBtn.addEventListener('click', () => applyZoom(currentScale + ZOOM_STEP));
+        zoomOutBtn.addEventListener('click', () => applyZoom(currentScale - ZOOM_STEP));
+        zoomFitWidthBtn.addEventListener('click', async () => {
+            if (!pdfDoc) return;
+            const firstPage = await pdfDoc.getPage(1);
+            const naturalViewport = firstPage.getViewport({ scale: 1 });
+            const availableWidth = container.clientWidth - 48; // leave a little breathing room
+            applyZoom(availableWidth / naturalViewport.width);
+        });
+
         async function renderPdf(bytes) {
             try {
                 // bytes arrives as a plain number array (see extension-side comment on
@@ -326,25 +534,17 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 // requires an actual TypedArray/string/array-like, so rebuild it here.
                 const typedBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
                 const loadingTask = pdfjsLib.getDocument({ data: typedBytes });
-                const pdf = await loadingTask.promise;
+                pdfDoc = await loadingTask.promise;
+                totalPages = pdfDoc.numPages;
+                currentPage = 1;
 
                 loadingOverlay.style.display = 'none';
 
-                const observer = setupLazyRendering(pdf);
+                updateZoomLabel();
+                updatePageControls();
+                enableToolbar();
 
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const page = await pdf.getPage(i);
-                    const viewport = page.getViewport({ scale: 1.5 });
-
-                    const pageContainer = document.createElement('div');
-                    pageContainer.className = 'page-container page-placeholder';
-                    pageContainer.dataset.pageNumber = String(i);
-                    pageContainer.style.width = viewport.width + 'px';
-                    pageContainer.style.height = viewport.height + 'px';
-
-                    container.appendChild(pageContainer);
-                    observer.observe(pageContainer);
-                }
+                await layoutPages();
             } catch (error) {
                 // Password-protected or otherwise encrypted PDFs surface here too;
                 // give a clearer hint for that common case.
