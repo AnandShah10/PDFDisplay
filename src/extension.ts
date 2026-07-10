@@ -221,9 +221,72 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             text-align: center;
         }
 
-        #viewer-container {
+        #content {
+            display: flex;
             height: calc(100vh - 48px);
             margin-top: 48px;
+        }
+
+        #thumbnail-sidebar {
+            width: 132px;
+            flex-shrink: 0;
+            background-color: #252526;
+            border-right: 1px solid #1e1e1e;
+            overflow-y: auto;
+            padding: 14px 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            transition: width 0.15s ease, padding 0.15s ease, border 0.15s ease;
+        }
+
+        #thumbnail-sidebar.collapsed {
+            width: 0;
+            padding: 0;
+            border-right: none;
+            overflow: hidden;
+        }
+
+        .thumb-container {
+            position: relative;
+            cursor: pointer;
+            background-color: white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+            border: 2px solid transparent;
+            border-radius: 2px;
+            line-height: 0;
+            flex-shrink: 0;
+        }
+
+        .thumb-container:hover {
+            border-color: #666;
+        }
+
+        .thumb-container.active {
+            border-color: #007acc;
+        }
+
+        .thumb-placeholder {
+            background-color: #3c3c3c;
+        }
+
+        .thumb-page-number {
+            position: absolute;
+            bottom: 3px;
+            right: 4px;
+            font-size: 10px;
+            line-height: 1.4;
+            background: rgba(0,0,0,0.65);
+            color: #fff;
+            padding: 0 4px;
+            border-radius: 2px;
+            pointer-events: none;
+        }
+
+        #viewer-container {
+            flex: 1;
+            height: 100%;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
@@ -299,6 +362,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 </head>
 <body>
     <div id="toolbar">
+        <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -320,7 +384,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <div id="loading-text">Loading PDF document...</div>
     </div>
 
-    <div id="viewer-container"></div>
+    <div id="content">
+        <div id="thumbnail-sidebar"></div>
+        <div id="viewer-container"></div>
+    </div>
 
     <script nonce="${nonce}">
         const vscodeApi = acquireVsCodeApi();
@@ -328,6 +395,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const container = document.getElementById('viewer-container');
         const loadingOverlay = document.getElementById('loading-overlay');
         const loadingText = document.getElementById('loading-text');
+
+        const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+        const thumbnailSidebar = document.getElementById('thumbnail-sidebar');
 
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
@@ -376,6 +446,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         let lazyRenderObserver = null;
         let currentPageObserver = null;
+        let thumbRenderObserver = null;
+        const THUMB_WIDTH = 100;
 
         function updateZoomLabel() {
             zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
@@ -386,10 +458,100 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             pageCountEl.textContent = String(totalPages);
             prevPageBtn.disabled = currentPage <= 1;
             nextPageBtn.disabled = currentPage >= totalPages;
+            updateActiveThumbnail();
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn].forEach(el => el.disabled = false);
+        }
+
+        toggleSidebarBtn.addEventListener('click', () => {
+            thumbnailSidebar.classList.toggle('collapsed');
+        });
+
+        // Builds the thumbnail strip once per document (independent of zoom level -
+        // thumbnails always render at a small fixed width). Lazily renders each
+        // thumbnail as it scrolls into view within the sidebar, same pattern as
+        // the main page viewer.
+        async function buildThumbnails() {
+            thumbnailSidebar.innerHTML = '';
+            if (thumbRenderObserver) thumbRenderObserver.disconnect();
+
+            thumbRenderObserver = new IntersectionObserver((entries) => {
+                for (const entry of entries) {
+                    if (entry.isIntersecting) {
+                        const el = entry.target;
+                        thumbRenderObserver.unobserve(el);
+                        renderThumbnail(el);
+                    }
+                }
+            }, { root: thumbnailSidebar, rootMargin: '300px 0px' });
+
+            for (let i = 1; i <= totalPages; i++) {
+                const page = await pdfDoc.getPage(i);
+                const naturalViewport = page.getViewport({ scale: 1 });
+                const scale = THUMB_WIDTH / naturalViewport.width;
+                const viewport = page.getViewport({ scale });
+
+                const thumb = document.createElement('div');
+                thumb.className = 'thumb-container thumb-placeholder';
+                thumb.dataset.pageNumber = String(i);
+                thumb.style.width = viewport.width + 'px';
+                thumb.style.height = viewport.height + 'px';
+                thumb.title = 'Page ' + i;
+                thumb.addEventListener('click', () => scrollToPage(i));
+
+                const label = document.createElement('span');
+                label.className = 'thumb-page-number';
+                label.textContent = String(i);
+                thumb.appendChild(label);
+
+                thumbnailSidebar.appendChild(thumb);
+                thumbRenderObserver.observe(thumb);
+            }
+
+            updateActiveThumbnail();
+        }
+
+        async function renderThumbnail(thumbEl) {
+            const pageNum = Number(thumbEl.dataset.pageNumber);
+            try {
+                const page = await pdfDoc.getPage(pageNum);
+                const naturalViewport = page.getViewport({ scale: 1 });
+                const scale = THUMB_WIDTH / naturalViewport.width;
+                const viewport = page.getViewport({ scale });
+                const dpr = window.devicePixelRatio || 1;
+
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = Math.floor(viewport.width * dpr);
+                canvas.height = Math.floor(viewport.height * dpr);
+                canvas.style.width = viewport.width + 'px';
+                canvas.style.height = viewport.height + 'px';
+
+                const label = thumbEl.querySelector('.thumb-page-number');
+                thumbEl.innerHTML = '';
+                thumbEl.appendChild(canvas);
+                if (label) thumbEl.appendChild(label);
+
+                const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined;
+                await page.render({ canvasContext: context, viewport, transform }).promise;
+            } catch (err) {
+                // A failed thumbnail shouldn't disrupt the main viewer; leave the placeholder as-is.
+            }
+        }
+
+        function updateActiveThumbnail() {
+            const thumbs = thumbnailSidebar.querySelectorAll('.thumb-container');
+            let activeThumb = null;
+            thumbs.forEach(t => {
+                const isActive = Number(t.dataset.pageNumber) === currentPage;
+                t.classList.toggle('active', isActive);
+                if (isActive) activeThumb = t;
+            });
+            if (activeThumb) {
+                activeThumb.scrollIntoView({ block: 'nearest' });
+            }
         }
 
         function clampScale(scale) {
@@ -545,6 +707,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 enableToolbar();
 
                 await layoutPages();
+                buildThumbnails(); // independent of zoom level, no need to block on it
             } catch (error) {
                 // Password-protected or otherwise encrypted PDFs surface here too;
                 // give a clearer hint for that common case.
