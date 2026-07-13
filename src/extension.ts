@@ -34,10 +34,51 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.executeCommand('vscode.openWith', uri, PdfViewerProvider.viewType);
     }));
+
+    // ---- Command Palette integration ---------------------------------------
+    // All of the actual behavior (zoom, page nav, search, etc.) lives inside the
+    // webview's own JS, so these commands just forward an action to whichever PDF
+    // panel is currently focused (tracked via PdfViewerProvider.activePanel).
+    function postToActivePanel(action: string, payload?: unknown) {
+        const panel = PdfViewerProvider.activePanel;
+        if (!panel) {
+            vscode.window.showInformationMessage('Open a PDF first.');
+            return;
+        }
+        panel.webview.postMessage({ type: 'command', action, payload });
+    }
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('pdfDisplay.zoomIn', () => postToActivePanel('zoom-in')),
+        vscode.commands.registerCommand('pdfDisplay.zoomOut', () => postToActivePanel('zoom-out')),
+        vscode.commands.registerCommand('pdfDisplay.zoomFitWidth', () => postToActivePanel('fit-width')),
+        vscode.commands.registerCommand('pdfDisplay.nextPage', () => postToActivePanel('next-page')),
+        vscode.commands.registerCommand('pdfDisplay.prevPage', () => postToActivePanel('prev-page')),
+        vscode.commands.registerCommand('pdfDisplay.find', () => postToActivePanel('open-search')),
+        vscode.commands.registerCommand('pdfDisplay.toggleSidebar', () => postToActivePanel('toggle-sidebar')),
+        vscode.commands.registerCommand('pdfDisplay.toggleAnnotate', () => postToActivePanel('toggle-annotate')),
+        vscode.commands.registerCommand('pdfDisplay.goToPage', async () => {
+            if (!PdfViewerProvider.activePanel) {
+                vscode.window.showInformationMessage('Open a PDF first.');
+                return;
+            }
+            const value = await vscode.window.showInputBox({
+                prompt: 'Go to page number',
+                validateInput: v => (/^\d+$/.test(v.trim()) && Number(v) > 0) ? undefined : 'Enter a page number'
+            });
+            if (value) {
+                postToActivePanel('go-to-page', Number(value));
+            }
+        })
+    );
 }
 
 class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'pdfDisplay.pdfViewer';
+
+    // Tracks whichever PDF panel is currently focused, so Command Palette actions
+    // (registered once in activate()) know which webview to forward them to.
+    public static activePanel: vscode.WebviewPanel | undefined;
 
     constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -103,9 +144,23 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview, fileName, nonce);
 
-        // Clean up if/when we hold extension-side resources tied to this panel in the future.
+        // Command Palette routing: keep track of whichever panel currently has
+        // focus so commands registered once in activate() know where to send actions.
+        if (webviewPanel.active) {
+            PdfViewerProvider.activePanel = webviewPanel;
+        }
+        webviewPanel.onDidChangeViewState(e => {
+            if (e.webviewPanel.active) {
+                PdfViewerProvider.activePanel = e.webviewPanel;
+            } else if (PdfViewerProvider.activePanel === e.webviewPanel) {
+                PdfViewerProvider.activePanel = undefined;
+            }
+        });
+
         webviewPanel.onDidDispose(() => {
-            // no external resources currently held; placeholder for future cleanup
+            if (PdfViewerProvider.activePanel === webviewPanel) {
+                PdfViewerProvider.activePanel = undefined;
+            }
         });
     }
 
@@ -340,7 +395,22 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             height: 100%;
             overflow: hidden;
             line-height: 1;
-            pointer-events: none; /* highlighting only for now; not wired up for text selection/copy yet */
+            user-select: text;
+            /* pointer-events left at the default 'auto' so text is actually
+               selectable/copyable - see the annotate-mode override below, which
+               turns this back off so it doesn't fight with placing sticky notes. */
+        }
+
+        #viewer-container:not(.annotate-cursor) .text-layer {
+            cursor: text;
+        }
+
+        #viewer-container.annotate-cursor .text-layer {
+            pointer-events: none;
+        }
+
+        .text-layer ::selection {
+            background: var(--vscode-editor-selectionBackground, rgba(0, 120, 215, 0.35));
         }
 
         .text-layer > span {
@@ -626,6 +696,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let thumbRenderObserver = null;
         const THUMB_WIDTH = 100;
 
+        // Reused for measuring how wide the text layer's browser-rendered spans
+        // come out, so they can be horizontally corrected to match the actual
+        // on-canvas glyph widths (see buildTextLayer) - the invisible text layer's
+        // font never exactly matches the PDF's embedded font, so without this,
+        // selection boundaries would drift from the visible text as strings get longer.
+        const measureCtx = document.createElement('canvas').getContext('2d');
+
         // ---- Search state ---------------------------------------------------
         const pageTextCache = new Map(); // pageNum -> pdf.js textContent, extracted once per page
         let searchQuery = '';
@@ -841,6 +918,22 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 span.style.left = left + 'px';
                 span.style.top = top + 'px';
                 span.style.fontSize = fontHeight + 'px';
+
+                // Horizontally stretch/shrink the span so its rendered width matches
+                // the glyph run's true on-canvas width (item.width, in the same
+                // pre-viewport text space as item.transform) - our sans-serif stand-in
+                // font otherwise measures differently than whatever font the PDF
+                // actually embeds, which would make selection drift from the visible
+                // text on longer lines.
+                if (measureCtx && typeof item.width === 'number' && item.width > 0) {
+                    const expectedWidth = item.width * viewport.scale;
+                    measureCtx.font = fontHeight + 'px sans-serif';
+                    const measuredWidth = measureCtx.measureText(item.str).width;
+                    if (measuredWidth > 0) {
+                        span.style.transform = 'scaleX(' + (expectedWidth / measuredWidth) + ')';
+                    }
+                }
+
                 textLayerDiv.appendChild(span);
             });
 
@@ -1356,6 +1449,25 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             }
         }
 
+        // Actions forwarded from Command Palette commands (see postToActivePanel
+        // in extension.ts) - reuses the same functions the toolbar buttons call.
+        function handleExternalCommand(action, payload) {
+            if (!pdfDoc) return; // nothing to act on before a document has loaded
+            switch (action) {
+                case 'zoom-in': applyZoom(currentScale + ZOOM_STEP); break;
+                case 'zoom-out': applyZoom(currentScale - ZOOM_STEP); break;
+                case 'fit-width': zoomFitWidthBtn.click(); break;
+                case 'next-page': scrollToPage(currentPage + 1); break;
+                case 'prev-page': scrollToPage(currentPage - 1); break;
+                case 'go-to-page':
+                    if (typeof payload === 'number' && Number.isFinite(payload)) scrollToPage(payload);
+                    break;
+                case 'open-search': openSearch(); break;
+                case 'toggle-sidebar': toggleSidebarBtn.click(); break;
+                case 'toggle-annotate': setAnnotateMode(!annotateMode); break;
+            }
+        }
+
         window.addEventListener('message', (event) => {
             const msg = event.data;
             if (msg.type === 'pdf-data') {
@@ -1365,6 +1477,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             } else if (msg.type === 'pdf-error') {
                 pdfDataReceived = true;
                 showError(msg.message);
+            } else if (msg.type === 'command') {
+                handleExternalCommand(msg.action, msg.payload);
             }
         });
 

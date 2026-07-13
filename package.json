@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "A simple PDF viewer for VS Code",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -24,6 +24,60 @@
       {
         "command": "pdfDisplay.openPdf",
         "title": "PDF Display: View PDF"
+      },
+      {
+        "command": "pdfDisplay.zoomIn",
+        "title": "PDF Display: Zoom In"
+      },
+      {
+        "command": "pdfDisplay.zoomOut",
+        "title": "PDF Display: Zoom Out"
+      },
+      {
+        "command": "pdfDisplay.zoomFitWidth",
+        "title": "PDF Display: Fit Width"
+      },
+      {
+        "command": "pdfDisplay.nextPage",
+        "title": "PDF Display: Next Page"
+      },
+      {
+        "command": "pdfDisplay.prevPage",
+        "title": "PDF Display: Previous Page"
+      },
+      {
+        "command": "pdfDisplay.goToPage",
+        "title": "PDF Display: Go to Page..."
+      },
+      {
+        "command": "pdfDisplay.find",
+        "title": "PDF Display: Find in Document"
+      },
+      {
+        "command": "pdfDisplay.toggleSidebar",
+        "title": "PDF Display: Toggle Thumbnails"
+      },
+      {
+        "command": "pdfDisplay.toggleAnnotate",
+        "title": "PDF Display: Add Sticky Note"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "pdfDisplay.find",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.nextPage",
+        "key": "pagedown",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.prevPage",
+        "key": "pageup",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       }
     ],
     "customEditors": [
