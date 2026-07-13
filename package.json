@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "A simple PDF viewer for VS Code",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -60,6 +60,14 @@
       {
         "command": "pdfDisplay.toggleAnnotate",
         "title": "PDF Display: Add Sticky Note"
+      },
+      {
+        "command": "pdfDisplay.toggleBookmarks",
+        "title": "PDF Display: Toggle Bookmarks Panel"
+      },
+      {
+        "command": "pdfDisplay.bookmarkCurrentPage",
+        "title": "PDF Display: Bookmark Current Page"
       }
     ],
     "keybindings": [

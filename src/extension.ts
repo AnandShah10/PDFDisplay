@@ -57,6 +57,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('pdfDisplay.find', () => postToActivePanel('open-search')),
         vscode.commands.registerCommand('pdfDisplay.toggleSidebar', () => postToActivePanel('toggle-sidebar')),
         vscode.commands.registerCommand('pdfDisplay.toggleAnnotate', () => postToActivePanel('toggle-annotate')),
+        vscode.commands.registerCommand('pdfDisplay.toggleBookmarks', () => postToActivePanel('toggle-bookmarks')),
+        vscode.commands.registerCommand('pdfDisplay.bookmarkCurrentPage', () => postToActivePanel('bookmark-current-page')),
         vscode.commands.registerCommand('pdfDisplay.goToPage', async () => {
             if (!PdfViewerProvider.activePanel) {
                 vscode.window.showInformationMessage('Open a PDF first.');
@@ -99,10 +101,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const fileName = escapeHtml(vscode.workspace.asRelativePath(document.uri, false).split(/[\\/]/).pop() ?? 'document.pdf');
         const nonce = getNonce();
 
-        // Load and send the PDF bytes (+ any previously saved annotations) via
-        // postMessage instead of embedding a giant base64 string inline in the
-        // HTML (smaller payload, no huge string literal, avoids holding the file
-        // in memory 2-3x over).
+        // Load and send the PDF bytes (+ any previously saved annotations, last
+        // page/zoom, and bookmarks) via postMessage instead of embedding a giant
+        // base64 string inline in the HTML (smaller payload, no huge string literal,
+        // avoids holding the file in memory 2-3x over).
         const loadAndSend = async () => {
             try {
                 const bytes = await vscode.workspace.fs.readFile(document.uri); // async, non-blocking
@@ -115,7 +117,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     // send a definite plain number array instead and rebuild a real
                     // Uint8Array on the webview side - this works the same everywhere.
                     data: Array.from(bytes),
-                    annotations: getStoredAnnotations(this.context, document.uri)
+                    annotations: getStoredAnnotations(this.context, document.uri),
+                    viewState: getStoredViewState(this.context, document.uri),
+                    bookmarks: getStoredBookmarks(this.context, document.uri)
                 });
             } catch (err: any) {
                 webviewPanel.webview.postMessage({
@@ -139,6 +143,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 // storage (VS Code globalState) rather than a sidecar file or
                 // the PDF itself, keyed per-document so they survive reloads.
                 storeAnnotations(this.context, document.uri, Array.isArray(msg.annotations) ? msg.annotations : []);
+            } else if (msg?.type === 'save-view-state') {
+                // Last-viewed page + zoom, saved (debounced) as the user scrolls/zooms,
+                // so reopening the document resumes where they left off.
+                if (typeof msg.page === 'number' && typeof msg.scale === 'number') {
+                    storeViewState(this.context, document.uri, { page: msg.page, scale: msg.scale });
+                }
+            } else if (msg?.type === 'save-bookmarks') {
+                storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
             }
         });
 
@@ -542,6 +554,89 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             white-space: nowrap;
         }
 
+        #bookmarks-panel {
+            position: fixed;
+            top: 56px;
+            right: 20px;
+            width: 240px;
+            max-height: 320px;
+            background-color: var(--toolbar-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 10px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #bookmarks-panel.hidden {
+            display: none;
+        }
+
+        .bookmarks-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .bookmarks-header .toolbar-btn.text-btn {
+            flex: 1;
+            text-align: left;
+            background-color: var(--hover-bg);
+        }
+
+        #bookmarks-list {
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .bookmark-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-color);
+        }
+
+        .bookmark-item:hover {
+            background-color: var(--hover-bg);
+        }
+
+        .bookmark-item .bookmark-label {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .bookmark-remove {
+            background: transparent;
+            border: none;
+            color: var(--muted-text-color);
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            padding: 0 2px;
+        }
+
+        .bookmark-remove:hover {
+            color: var(--text-color);
+        }
+
+        .bookmarks-empty {
+            font-size: 12px;
+            color: var(--muted-text-color);
+            text-align: center;
+            padding: 12px 0;
+        }
+
         #loading-overlay {
             position: fixed;
             top: 48px;
@@ -592,6 +687,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
         <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
         <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
+        <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -614,6 +710,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <button id="search-prev" class="toolbar-btn" title="Previous match">&#9650;</button>
         <button id="search-next" class="toolbar-btn" title="Next match">&#9660;</button>
         <button id="search-close" class="toolbar-btn" title="Close">&times;</button>
+    </div>
+
+    <div id="bookmarks-panel" class="hidden">
+        <div class="bookmarks-header">
+            <button id="bookmark-toggle-current" class="toolbar-btn text-btn">&#9734; Bookmark this page</button>
+            <button id="bookmarks-close" class="toolbar-btn" title="Close">&times;</button>
+        </div>
+        <div id="bookmarks-list"></div>
     </div>
 
     <div id="loading-overlay">
@@ -645,6 +749,12 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const searchCloseBtn = document.getElementById('search-close');
 
         const toggleAnnotateBtn = document.getElementById('toggle-annotate');
+
+        const toggleBookmarksBtn = document.getElementById('toggle-bookmarks');
+        const bookmarksPanel = document.getElementById('bookmarks-panel');
+        const bookmarksListEl = document.getElementById('bookmarks-list');
+        const bookmarkToggleCurrentBtn = document.getElementById('bookmark-toggle-current');
+        const bookmarksCloseBtn = document.getElementById('bookmarks-close');
 
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
@@ -716,8 +826,26 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let annotateMode = false;
         let activeAnnotationPopup = null;
 
+        // ---- Bookmarks + last-viewed-position state ----------------------------
+        let bookmarks = [];              // { pageNum, label, createdAt }[], from extension storage
+        let pendingViewState = null;     // { page, scale } to restore once the doc has loaded, then discarded
+        let viewStateSaveTimer = null;
+
         function updateZoomLabel() {
             zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
+        }
+
+        // Debounced save of the current page + zoom, so scrolling/zooming doesn't
+        // spam the extension host with messages - it settles ~600ms after the
+        // last change before persisting. This is what makes "resume where I left
+        // off" work: there's no reliable "about to close" hook for a webview, so
+        // we save opportunistically throughout the session instead of on close.
+        function scheduleViewStateSave() {
+            if (!pdfDoc) return;
+            clearTimeout(viewStateSaveTimer);
+            viewStateSaveTimer = setTimeout(() => {
+                vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale });
+            }, 600);
         }
 
         function updatePageControls() {
@@ -726,10 +854,12 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             prevPageBtn.disabled = currentPage <= 1;
             nextPageBtn.disabled = currentPage >= totalPages;
             updateActiveThumbnail();
+            updateBookmarkToggleLabel();
+            scheduleViewStateSave();
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -979,6 +1109,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         async function applyZoom(newScale) {
             currentScale = clampScale(newScale);
             updateZoomLabel();
+            scheduleViewStateSave();
             const pageToRestore = currentPage;
             await layoutPages();
             // Re-center on roughly the same page after rebuilding at the new scale.
@@ -1200,6 +1331,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         searchCloseBtn.addEventListener('click', closeSearch);
 
         function openSearch() {
+            closeBookmarksPanel();
             searchBar.classList.remove('hidden');
             searchInput.focus();
             searchInput.select();
@@ -1419,6 +1551,98 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             e.stopPropagation(); // don't let the document-level "click outside" listener close the popup we just opened
         });
 
+        // ---- Bookmarks ----------------------------------------------------------
+        // Persisted the same way as annotations: postMessage to the extension host,
+        // which stores them in globalState keyed per-document (see storeBookmarks
+        // in extension.ts).
+
+        function persistBookmarks() {
+            vscodeApi.postMessage({ type: 'save-bookmarks', bookmarks });
+        }
+
+        function isPageBookmarked(pageNum) {
+            return bookmarks.some(b => b.pageNum === pageNum);
+        }
+
+        function updateBookmarkToggleLabel() {
+            if (!bookmarkToggleCurrentBtn) return;
+            bookmarkToggleCurrentBtn.innerHTML = isPageBookmarked(currentPage)
+                ? '&#9733; Remove bookmark'
+                : '&#9734; Bookmark this page';
+        }
+
+        function renderBookmarksList() {
+            bookmarksListEl.innerHTML = '';
+
+            if (bookmarks.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'bookmarks-empty';
+                empty.textContent = 'No bookmarks yet';
+                bookmarksListEl.appendChild(empty);
+                return;
+            }
+
+            bookmarks
+                .slice()
+                .sort((a, b) => a.pageNum - b.pageNum)
+                .forEach(b => {
+                    const item = document.createElement('div');
+                    item.className = 'bookmark-item';
+
+                    const label = document.createElement('span');
+                    label.className = 'bookmark-label';
+                    label.textContent = b.label || ('Page ' + b.pageNum);
+                    item.appendChild(label);
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.className = 'bookmark-remove';
+                    removeBtn.title = 'Remove bookmark';
+                    removeBtn.textContent = '\u00d7';
+                    removeBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        bookmarks = bookmarks.filter(x => x.pageNum !== b.pageNum);
+                        persistBookmarks();
+                        renderBookmarksList();
+                        updateBookmarkToggleLabel();
+                    });
+                    item.appendChild(removeBtn);
+
+                    item.addEventListener('click', () => scrollToPage(b.pageNum));
+
+                    bookmarksListEl.appendChild(item);
+                });
+        }
+
+        bookmarkToggleCurrentBtn.addEventListener('click', () => {
+            if (isPageBookmarked(currentPage)) {
+                bookmarks = bookmarks.filter(b => b.pageNum !== currentPage);
+            } else {
+                bookmarks.push({ pageNum: currentPage, label: 'Page ' + currentPage, createdAt: Date.now() });
+            }
+            persistBookmarks();
+            renderBookmarksList();
+            updateBookmarkToggleLabel();
+        });
+
+        function openBookmarksPanel() {
+            closeSearch();
+            bookmarksPanel.classList.remove('hidden');
+            renderBookmarksList();
+        }
+
+        function closeBookmarksPanel() {
+            bookmarksPanel.classList.add('hidden');
+        }
+
+        toggleBookmarksBtn.addEventListener('click', () => {
+            if (bookmarksPanel.classList.contains('hidden')) {
+                openBookmarksPanel();
+            } else {
+                closeBookmarksPanel();
+            }
+        });
+        bookmarksCloseBtn.addEventListener('click', closeBookmarksPanel);
+
         async function renderPdf(bytes) {
             try {
                 // bytes arrives as a plain number array (see extension-side comment on
@@ -1428,7 +1652,16 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 const loadingTask = pdfjsLib.getDocument({ data: typedBytes });
                 pdfDoc = await loadingTask.promise;
                 totalPages = pdfDoc.numPages;
-                currentPage = 1;
+
+                // Restore the last-viewed page/zoom (if any) before the first render,
+                // so pages come up already at the right scale instead of flashing
+                // default zoom and then re-rendering.
+                if (pendingViewState && typeof pendingViewState.scale === 'number') {
+                    currentScale = clampScale(pendingViewState.scale);
+                }
+                currentPage = (pendingViewState && typeof pendingViewState.page === 'number')
+                    ? Math.min(totalPages, Math.max(1, pendingViewState.page))
+                    : 1;
 
                 loadingOverlay.style.display = 'none';
 
@@ -1438,6 +1671,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
                 await layoutPages();
                 buildThumbnails(); // independent of zoom level, no need to block on it
+
+                if (pendingViewState && currentPage > 1) {
+                    // Instant jump, not a smooth animated scroll - restoring position
+                    // on open should feel like "it was already there", not a scroll gesture.
+                    const target = container.querySelector('.page-container[data-page-number="' + currentPage + '"]');
+                    if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
+                }
+                pendingViewState = null;
             } catch (error) {
                 // Password-protected or otherwise encrypted PDFs surface here too;
                 // give a clearer hint for that common case.
@@ -1465,6 +1706,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'open-search': openSearch(); break;
                 case 'toggle-sidebar': toggleSidebarBtn.click(); break;
                 case 'toggle-annotate': setAnnotateMode(!annotateMode); break;
+                case 'toggle-bookmarks': toggleBookmarksBtn.click(); break;
+                case 'bookmark-current-page': bookmarkToggleCurrentBtn.click(); break;
             }
         }
 
@@ -1473,6 +1716,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             if (msg.type === 'pdf-data') {
                 pdfDataReceived = true;
                 annotations = Array.isArray(msg.annotations) ? msg.annotations : [];
+                bookmarks = Array.isArray(msg.bookmarks) ? msg.bookmarks : [];
+                pendingViewState = (msg.viewState && typeof msg.viewState === 'object') ? msg.viewState : null;
                 renderPdf(msg.data);
             } else if (msg.type === 'pdf-error') {
                 pdfDataReceived = true;
@@ -1514,6 +1759,35 @@ function getStoredAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri)
 
 function storeAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri, annotations: unknown[]): Thenable<void> {
     return context.globalState.update(getAnnotationsStorageKey(uri), annotations);
+}
+
+interface PdfViewState {
+    page: number;
+    scale: number;
+}
+
+function getViewStateStorageKey(uri: vscode.Uri): string {
+    return 'pdfDisplay.viewState:' + uri.toString();
+}
+
+function getStoredViewState(context: vscode.ExtensionContext, uri: vscode.Uri): PdfViewState | undefined {
+    return context.globalState.get<PdfViewState>(getViewStateStorageKey(uri));
+}
+
+function storeViewState(context: vscode.ExtensionContext, uri: vscode.Uri, viewState: PdfViewState): Thenable<void> {
+    return context.globalState.update(getViewStateStorageKey(uri), viewState);
+}
+
+function getBookmarksStorageKey(uri: vscode.Uri): string {
+    return 'pdfDisplay.bookmarks:' + uri.toString();
+}
+
+function getStoredBookmarks(context: vscode.ExtensionContext, uri: vscode.Uri): unknown[] {
+    return context.globalState.get(getBookmarksStorageKey(uri), []);
+}
+
+function storeBookmarks(context: vscode.ExtensionContext, uri: vscode.Uri, bookmarks: unknown[]): Thenable<void> {
+    return context.globalState.update(getBookmarksStorageKey(uri), bookmarks);
 }
 
 function escapeHtml(value: string): string {
