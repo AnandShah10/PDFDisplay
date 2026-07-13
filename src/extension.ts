@@ -343,7 +343,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             pointer-events: none; /* highlighting only for now; not wired up for text selection/copy yet */
         }
 
-        .text-layer span {
+        .text-layer > span {
             position: absolute;
             color: transparent;
             white-space: pre;
@@ -928,25 +928,78 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function clearAllHighlights() {
-            container.querySelectorAll('.text-layer span.search-match, .text-layer span.search-match-current')
-                .forEach(s => s.classList.remove('search-match', 'search-match-current'));
+            // Rebuild every rendered span back to its plain source text (this also
+            // undoes the word-level <span> wrapping used for highlighting below).
+            container.querySelectorAll('.text-layer span[data-item-index]').forEach(span => {
+                const pageContainer = span.closest('.page-container');
+                const pageNum = pageContainer && Number(pageContainer.dataset.pageNumber);
+                const textContent = pageNum && pageTextCache.get(pageNum);
+                const idx = Number(span.dataset.itemIndex);
+                const itemStr = (textContent && textContent.items[idx] && textContent.items[idx].str);
+                span.textContent = itemStr !== undefined ? itemStr : span.textContent;
+            });
         }
 
-        // Applies highlight classes to whatever spans currently exist for a page
-        // (only rendered pages have a text layer at all - unrendered pages get
-        // caught up automatically since renderPage() calls this itself once its
-        // text layer is built, see renderPage above).
+        // Wraps just the matched substring(s) of a text item in their own inline
+        // <span class="search-match">, leaving the rest of the item as plain text -
+        // so the highlight box only covers the searched word, not the whole line.
+        function renderSpanWithHighlights(span, itemStr, occurrences) {
+            span.innerHTML = '';
+            let cursor = 0;
+            occurrences.forEach(occ => {
+                if (occ.charStart > cursor) {
+                    span.appendChild(document.createTextNode(itemStr.slice(cursor, occ.charStart)));
+                }
+                const mark = document.createElement('span');
+                mark.className = 'search-match' + (occ.isCurrent ? ' search-match-current' : '');
+                mark.textContent = itemStr.slice(occ.charStart, occ.charEnd);
+                span.appendChild(mark);
+                cursor = occ.charEnd;
+            });
+            if (cursor < itemStr.length) {
+                span.appendChild(document.createTextNode(itemStr.slice(cursor)));
+            }
+        }
+
+        // Applies highlight spans to whatever text-layer spans currently exist for
+        // a page (only rendered pages have a text layer at all - unrendered pages
+        // get caught up automatically since renderPage() calls this itself once
+        // its text layer is built, see renderPage above). Fully deterministic: every
+        // span on the page is reset from source text and only matched items are
+        // re-wrapped, so calling this is always safe even if a previous search left
+        // different spans highlighted.
         function applyHighlightForPage(pageNum) {
             const pageContainer = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
             const textLayer = pageContainer && pageContainer.querySelector('.text-layer');
-            if (!textLayer) return;
+            const textContent = pageTextCache.get(pageNum);
+            if (!textLayer || !textContent) return;
 
+            const byItem = new Map();
             matches.forEach((m, i) => {
                 if (m.pageNum !== pageNum) return;
-                const span = textLayer.querySelector('span[data-item-index="' + m.itemIndex + '"]');
-                if (!span) return;
-                span.classList.add('search-match');
-                span.classList.toggle('search-match-current', i === currentMatchIndex);
+                if (!byItem.has(m.itemIndex)) byItem.set(m.itemIndex, []);
+                byItem.get(m.itemIndex).push({ charStart: m.charStart, charEnd: m.charEnd, isCurrent: i === currentMatchIndex });
+            });
+
+            textLayer.querySelectorAll('span[data-item-index]').forEach(span => {
+                const idx = Number(span.dataset.itemIndex);
+                const itemStr = (textContent.items[idx] && textContent.items[idx].str) || '';
+                const occurrences = byItem.get(idx);
+                if (occurrences) {
+                    renderSpanWithHighlights(span, itemStr, occurrences.sort((a, b) => a.charStart - b.charStart));
+                } else {
+                    span.textContent = itemStr;
+                }
+            });
+        }
+
+        // Re-applies highlighting to every page that's currently rendered (has a
+        // text layer), based on the current matches / currentMatchIndex state.
+        function refreshAllHighlights() {
+            container.querySelectorAll('.page-container').forEach(pageContainer => {
+                if (pageContainer.querySelector('.text-layer')) {
+                    applyHighlightForPage(Number(pageContainer.dataset.pageNumber));
+                }
             });
         }
 
@@ -978,17 +1031,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
             const match = matches[currentMatchIndex];
             await ensurePageRendered(match.pageNum);
-            clearAllHighlights();
-            // Re-apply highlights for every page that currently has a text layer,
-            // not just the target page, so earlier matches stay visibly marked too.
-            const renderedPages = new Set(matches.map(m => m.pageNum));
-            renderedPages.forEach(applyHighlightForPage);
+            refreshAllHighlights();
 
             const pageContainer = container.querySelector('.page-container[data-page-number="' + match.pageNum + '"]');
             const textLayer = pageContainer && pageContainer.querySelector('.text-layer');
-            const span = textLayer && textLayer.querySelector('span[data-item-index="' + match.itemIndex + '"]');
-            if (span) {
-                span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const currentMark = textLayer && textLayer.querySelector('.search-match-current');
+            if (currentMark) {
+                currentMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
             } else {
                 scrollToPage(match.pageNum);
             }
@@ -1011,8 +1060,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 if (myToken !== searchToken) return; // a newer search superseded this one
                 const textContent = await getPageText(p);
                 textContent.items.forEach((item, idx) => {
-                    if (item.str && item.str.toLowerCase().includes(lowerQuery)) {
-                        matches.push({ pageNum: p, itemIndex: idx });
+                    if (!item.str) return;
+                    const lowerItem = item.str.toLowerCase();
+                    let searchFrom = 0;
+                    while (true) {
+                        const foundAt = lowerItem.indexOf(lowerQuery, searchFrom);
+                        if (foundAt === -1) break;
+                        matches.push({ pageNum: p, itemIndex: idx, charStart: foundAt, charEnd: foundAt + lowerQuery.length });
+                        searchFrom = foundAt + lowerQuery.length;
                     }
                 });
                 applyHighlightForPage(p); // no-op if page isn't rendered yet
