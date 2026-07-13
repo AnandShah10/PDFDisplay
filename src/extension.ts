@@ -108,6 +108,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const loadAndSend = async () => {
             try {
                 const bytes = await vscode.workspace.fs.readFile(document.uri); // async, non-blocking
+                const storedViewState = getStoredViewState(this.context, document.uri);
+                console.log('[pdfDisplay] loadAndSend for', document.uri.toString(), 'storedViewState=', storedViewState);
                 webviewPanel.webview.postMessage({
                     type: 'pdf-data',
                     // NOTE: whether a Uint8Array survives postMessage as an actual
@@ -118,7 +120,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     // Uint8Array on the webview side - this works the same everywhere.
                     data: Array.from(bytes),
                     annotations: getStoredAnnotations(this.context, document.uri),
-                    viewState: getStoredViewState(this.context, document.uri),
+                    viewState: storedViewState,
                     bookmarks: getStoredBookmarks(this.context, document.uri)
                 });
             } catch (err: any) {
@@ -146,6 +148,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             } else if (msg?.type === 'save-view-state') {
                 // Last-viewed page + zoom, saved (debounced) as the user scrolls/zooms,
                 // so reopening the document resumes where they left off.
+                console.log('[pdfDisplay] onDidReceiveMessage save-view-state', msg.page, msg.scale, 'for', document.uri.toString());
                 if (typeof msg.page === 'number' && typeof msg.scale === 'number') {
                     storeViewState(this.context, document.uri, { page: msg.page, scale: msg.scale });
                 }
@@ -378,6 +381,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             padding: 30px 0;
             gap: 24px;
             scroll-behavior: smooth;
+            /* Disable the browser's automatic scroll-anchoring for this container.
+               Without this, when a page near the top (often page 1, since it starts
+               near-visible before any restore-scroll happens) has its placeholder
+               swapped for its real rendered canvas shortly after we jump to a
+               different page, the browser "helpfully" compensates by yanking the
+               scroll position back toward that changed content - which is exactly
+               what was undoing the last-viewed-page restoration. */
+            overflow-anchor: none;
         }
 
         .page-container {
@@ -829,24 +840,51 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // ---- Bookmarks + last-viewed-position state ----------------------------
         let bookmarks = [];              // { pageNum, label, createdAt }[], from extension storage
         let pendingViewState = null;     // { page, scale } to restore once the doc has loaded, then discarded
+        let isRestoringView = false;     // true while renderPdf is applying pendingViewState; suppresses saves so the intersection-observer's page-1 blip during initial layout can't clobber the state we're mid-restore of
         let viewStateSaveTimer = null;
 
         function updateZoomLabel() {
             zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
         }
 
-        // Debounced save of the current page + zoom, so scrolling/zooming doesn't
-        // spam the extension host with messages - it settles ~600ms after the
-        // last change before persisting. This is what makes "resume where I left
-        // off" work: there's no reliable "about to close" hook for a webview, so
-        // we save opportunistically throughout the session instead of on close.
+        // Debounced save of the current page + zoom, so rapid scrolling/zooming
+        // doesn't spam the extension host with a message per intermediate step -
+        // it settles ~400ms after the last change before persisting normally.
+        //
+        // That debounce alone isn't enough for "resume where I left off" though:
+        // if the tab is closed before the timer fires, the pending save is lost
+        // and the last *persisted* state is stale (often still page 1). There's no
+        // hook for the extension host to pull final state from a webview that's
+        // already being torn down, so instead we flush immediately (bypassing the
+        // debounce) the moment this document becomes hidden or is about to unload -
+        // both of which reliably fire when a tab is closed or switched away from,
+        // even with retainContextWhenHidden keeping the script alive in the background.
         function scheduleViewStateSave() {
-            if (!pdfDoc) return;
+            if (!pdfDoc || isRestoringView) return;
             clearTimeout(viewStateSaveTimer);
-            viewStateSaveTimer = setTimeout(() => {
-                vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale });
-            }, 600);
+            viewStateSaveTimer = setTimeout(flushViewStateSave, 400);
         }
+
+        function flushViewStateSave() {
+            if (!pdfDoc || isRestoringView) {
+                console.log('[pdfDisplay] flushViewStateSave skipped', { hasPdfDoc: !!pdfDoc, isRestoringView });
+                return;
+            }
+            clearTimeout(viewStateSaveTimer);
+            console.log('[pdfDisplay] sending save-view-state', { page: currentPage, scale: currentScale });
+            vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale });
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            console.log('[pdfDisplay] visibilitychange, state=', document.visibilityState);
+            if (document.visibilityState === 'hidden') {
+                flushViewStateSave();
+            }
+        });
+        window.addEventListener('pagehide', () => {
+            console.log('[pdfDisplay] pagehide fired');
+            flushViewStateSave();
+        });
 
         function updatePageControls() {
             pageInput.value = String(currentPage);
@@ -975,6 +1013,17 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // stays in sync while the user scrolls (not just when they click nav buttons).
         function setupCurrentPageTracking() {
             const observer = new IntersectionObserver((entries) => {
+                // While a saved page/zoom is being restored, ignore intersection
+                // reports entirely - not just their downstream save. The page-build
+                // loop yields to the event loop on every page (each getPage() call
+                // round-trips to pdf.js's worker), so the browser can queue several
+                // of these notifications reflecting the *pre-restore-scroll* layout
+                // (page 1 still visible, since the restore scroll hasn't happened
+                // yet). Those can arrive at any point, including after the restore
+                // scroll - guarding only the save (as before) still let a stale
+                // notification silently overwrite currentPage itself.
+                if (isRestoringView) return;
+
                 let best = null;
                 for (const entry of entries) {
                     if (entry.isIntersecting && (!best || entry.intersectionRatio > best.intersectionRatio)) {
@@ -1659,11 +1708,25 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 if (pendingViewState && typeof pendingViewState.scale === 'number') {
                     currentScale = clampScale(pendingViewState.scale);
                 }
-                currentPage = (pendingViewState && typeof pendingViewState.page === 'number')
+                // Capture the restore target in a local const, independent of the
+                // currentPage variable - layoutPages() below populates placeholders
+                // top-down while the viewport is still scrolled to the top, so the
+                // current-page IntersectionObserver fires mid-layout reporting page 1
+                // as visible and overwrites currentPage before we get a chance to
+                // scroll. Using a local snapshot means that blip can't defeat the restore.
+                const targetPage = (pendingViewState && typeof pendingViewState.page === 'number')
                     ? Math.min(totalPages, Math.max(1, pendingViewState.page))
                     : 1;
+                currentPage = targetPage;
+                console.log('[pdfDisplay] computed targetPage=', targetPage, 'from pendingViewState=', pendingViewState, 'totalPages=', totalPages);
 
                 loadingOverlay.style.display = 'none';
+
+                // Also suppress view-state saves entirely while restoring - the same
+                // IntersectionObserver blip would otherwise schedule (and eventually
+                // flush) a save of the wrong page 1, quietly corrupting the very state
+                // we're in the middle of restoring.
+                isRestoringView = true;
 
                 updateZoomLabel();
                 updatePageControls();
@@ -1672,14 +1735,39 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 await layoutPages();
                 buildThumbnails(); // independent of zoom level, no need to block on it
 
-                if (pendingViewState && currentPage > 1) {
+                // Reassert the target in case the observer clobbered it during layout,
+                // then jump there for real.
+                currentPage = targetPage;
+                if (targetPage > 1) {
                     // Instant jump, not a smooth animated scroll - restoring position
                     // on open should feel like "it was already there", not a scroll gesture.
-                    const target = container.querySelector('.page-container[data-page-number="' + currentPage + '"]');
+                    const target = container.querySelector('.page-container[data-page-number="' + targetPage + '"]');
+                    console.log('[pdfDisplay] restoring scroll to page', targetPage, 'found target element:', !!target);
                     if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
                 }
-                pendingViewState = null;
+                updatePageControls();
+
+                // Don't lift the restore guard immediately: the page-building loop
+                // above yields to the event loop on every single page (each
+                // pdfDoc.getPage() call round-trips to pdf.js's worker), giving the
+                // browser several chances to queue current-page IntersectionObserver
+                // notifications based on the *pre-scroll* layout. Those can still
+                // arrive after this point - the observer callback itself now checks
+                // isRestoringView and ignores them entirely while this guard is up
+                // (previously only the save was guarded, which wasn't enough - a
+                // stale notification could still overwrite currentPage directly).
+                // A plain setTimeout (rather than requestAnimationFrame) is used to
+                // lift the guard since rAF isn't guaranteed to fire promptly if the
+                // tab isn't focused/visible right when the document finishes loading.
+                setTimeout(() => {
+                    currentPage = targetPage;
+                    updatePageControls();
+                    pendingViewState = null;
+                    isRestoringView = false;
+                    console.log('[pdfDisplay] restore guard lifted, currentPage=', currentPage);
+                }, 500);
             } catch (error) {
+                isRestoringView = false;
                 // Password-protected or otherwise encrypted PDFs surface here too;
                 // give a clearer hint for that common case.
                 const msg = (error && error.name === 'PasswordException')
@@ -1718,6 +1806,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 annotations = Array.isArray(msg.annotations) ? msg.annotations : [];
                 bookmarks = Array.isArray(msg.bookmarks) ? msg.bookmarks : [];
                 pendingViewState = (msg.viewState && typeof msg.viewState === 'object') ? msg.viewState : null;
+                console.log('[pdfDisplay] received pdf-data, viewState=', pendingViewState);
                 renderPdf(msg.data);
             } else if (msg.type === 'pdf-error') {
                 pdfDataReceived = true;
