@@ -59,6 +59,11 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('pdfDisplay.toggleAnnotate', () => postToActivePanel('toggle-annotate')),
         vscode.commands.registerCommand('pdfDisplay.toggleBookmarks', () => postToActivePanel('toggle-bookmarks')),
         vscode.commands.registerCommand('pdfDisplay.bookmarkCurrentPage', () => postToActivePanel('bookmark-current-page')),
+        vscode.commands.registerCommand('pdfDisplay.toggleToc', () => postToActivePanel('toggle-toc')),
+        vscode.commands.registerCommand('pdfDisplay.toggleHighContrast', () => postToActivePanel('toggle-high-contrast')),
+        vscode.commands.registerCommand('pdfDisplay.copyPageImage', () => postToActivePanel('copy-page-image')),
+        vscode.commands.registerCommand('pdfDisplay.rotateView', () => postToActivePanel('rotate-view')),
+        vscode.commands.registerCommand('pdfDisplay.toggleProperties', () => postToActivePanel('toggle-properties')),
         vscode.commands.registerCommand('pdfDisplay.goToPage', async () => {
             if (!PdfViewerProvider.activePanel) {
                 vscode.window.showInformationMessage('Open a PDF first.');
@@ -150,7 +155,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 // so reopening the document resumes where they left off.
                 console.log('[pdfDisplay] onDidReceiveMessage save-view-state', msg.page, msg.scale, 'for', document.uri.toString());
                 if (typeof msg.page === 'number' && typeof msg.scale === 'number') {
-                    storeViewState(this.context, document.uri, { page: msg.page, scale: msg.scale });
+                    storeViewState(this.context, document.uri, { page: msg.page, scale: msg.scale, highContrast: msg.highContrast });
                 }
             } else if (msg?.type === 'save-bookmarks') {
                 storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
@@ -789,14 +794,95 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         ::-webkit-scrollbar-thumb:hover {
             background: var(--vscode-scrollbarSlider-hoverBackground, #888);
         }
+
+        #reading-progress {
+            position: fixed;
+            top: 48px;
+            left: 0;
+            height: 3px;
+            background-color: var(--accent-color);
+            z-index: 101;
+            transition: width 0.2s ease-out;
+            width: 0%;
+        }
+
+        #viewer-container.high-contrast canvas {
+            filter: invert(1) hue-rotate(180deg);
+        }
+
+        #toc-panel {
+            position: fixed;
+            top: 56px;
+            right: 20px;
+            width: 260px;
+            max-height: 400px;
+            background-color: var(--toolbar-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 10px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #toc-panel.hidden {
+            display: none;
+        }
+
+        .toc-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        #toc-list {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .toc-item {
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-color);
+            padding: 6px 8px;
+            border-radius: 4px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .toc-item.toc-child {
+            color: var(--muted-text-color);
+            font-size: 11px;
+        }
+
+        .toc-item:hover {
+            background-color: var(--hover-bg);
+        }
+
+        .toc-item.toc-active {
+            background-color: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.35));
+            color: var(--text-color) !important;
+        }
     </style>
 </head>
 <body>
     <div id="toolbar">
         <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
+        <button id="toggle-toc" class="toolbar-btn" title="Table of Contents" disabled>&#128214;</button>
         <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
         <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
         <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
+        <button id="toggle-contrast" class="toolbar-btn" title="Toggle High Contrast" disabled>&#9680;</button>
+        <button id="copy-page" class="toolbar-btn" title="Copy Current Page" disabled>&#128203;</button>
         <button id="rotate-view" class="toolbar-btn" title="Rotate view" disabled>&#8635;</button>
         <button id="toggle-properties" class="toolbar-btn" title="Document properties" disabled>&#8505;</button>
         <div class="title">📄 ${fileName}</div>
@@ -814,6 +900,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="zoom-fit-width" class="toolbar-btn text-btn" title="Fit width" disabled>Fit Width</button>
         </div>
     </div>
+
+    <div id="reading-progress"></div>
 
     <div id="search-bar" class="hidden">
         <input id="search-input" type="text" placeholder="Find in document" />
@@ -837,6 +925,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="properties-close" class="toolbar-btn" title="Close">&times;</button>
         </div>
         <div id="properties-list"></div>
+    </div>
+
+    <div id="toc-panel" class="hidden">
+        <div class="toc-header">
+            <span>Table of Contents</span>
+            <button id="toc-close" class="toolbar-btn" title="Close">&times;</button>
+        </div>
+        <div id="toc-list"></div>
     </div>
 
     <div id="loading-overlay">
@@ -905,6 +1001,15 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const propertiesListEl = document.getElementById('properties-list');
         const propertiesCloseBtn = document.getElementById('properties-close');
 
+        const toggleTocBtn = document.getElementById('toggle-toc');
+        const tocPanel = document.getElementById('toc-panel');
+        const tocListEl = document.getElementById('toc-list');
+        const tocCloseBtn = document.getElementById('toc-close');
+
+        const toggleContrastBtn = document.getElementById('toggle-contrast');
+        const copyPageBtn = document.getElementById('copy-page');
+        const readingProgress = document.getElementById('reading-progress');
+
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
         const pageInput = document.getElementById('page-input');
@@ -946,6 +1051,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let currentPage = 1;
         let currentScale = 1.5;     // pdf.js viewport scale; BASE_SCALE below maps this to "100%"
         let currentRotation = 0;    // 0 | 90 | 180 | 270, view-only - never written back to the file
+        let currentHighContrast = false;
         const BASE_SCALE = 1.5;
         const MIN_SCALE = 0.375;    // ~25%
         const MAX_SCALE = 6.0;      // ~400%
@@ -1023,8 +1129,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 return;
             }
             clearTimeout(viewStateSaveTimer);
-            debugLog('sending save-view-state', { page: currentPage, scale: currentScale });
-            vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale });
+            debugLog('sending save-view-state', { page: currentPage, scale: currentScale, highContrast: currentHighContrast });
+            vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale, highContrast: currentHighContrast });
         }
 
         document.addEventListener('visibilitychange', () => {
@@ -1043,13 +1149,18 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             pageCountEl.textContent = String(totalPages);
             prevPageBtn.disabled = currentPage <= 1;
             nextPageBtn.disabled = currentPage >= totalPages;
+
+            if (totalPages > 0) {
+                readingProgress.style.width = ((currentPage / totalPages) * 100) + '%';
+            }
+
             updateActiveThumbnail();
             updateBookmarkToggleLabel();
             scheduleViewStateSave();
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -1365,6 +1476,125 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         rotateViewBtn.addEventListener('click', () => applyRotation(currentRotation + 90));
 
+        // High Contrast Mode
+        function applyHighContrast(enabled) {
+            currentHighContrast = enabled;
+            container.classList.toggle('high-contrast', currentHighContrast);
+            toggleContrastBtn.classList.toggle('active', currentHighContrast);
+            scheduleViewStateSave();
+        }
+
+        toggleContrastBtn.addEventListener('click', () => applyHighContrast(!currentHighContrast));
+
+        // Copy Page Image
+        copyPageBtn.addEventListener('click', async () => {
+            const pageContainer = container.querySelector('.page-container[data-page-number="' + currentPage + '"]');
+            const canvas = pageContainer ? pageContainer.querySelector('canvas') : null;
+            if (canvas) {
+                const originalIcon = copyPageBtn.innerHTML;
+                copyPageBtn.innerHTML = '&#10003;'; // checkmark
+                try {
+                    canvas.toBlob((blob) => {
+                        if (blob) {
+                            navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).catch(err => debugLog('Clipboard error:', err));
+                        }
+                    }, 'image/png');
+                } catch (e) {
+                    debugLog('Copy image failed', e);
+                }
+                setTimeout(() => copyPageBtn.innerHTML = originalIcon, 1500);
+            }
+        });
+
+        // Table of Contents
+        async function renderTocList() {
+            if (!pdfDoc) {
+                debugLog('renderTocList: pdfDoc not ready yet');
+                return;
+            }
+            tocListEl.innerHTML = '<div class="bookmarks-empty">Loading\u2026</div>';
+            let outline = null;
+            try {
+                outline = await pdfDoc.getOutline();
+                debugLog('getOutline() returned:', outline ? outline.length + ' items' : 'null');
+            } catch (e) {
+                debugLog('Error getting outline:', (e && e.message) || String(e));
+            }
+
+            tocListEl.innerHTML = '';
+
+            if (!outline || outline.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'bookmarks-empty';
+                empty.textContent = outline === null ? 'No outline in this PDF' : 'Empty outline';
+                tocListEl.appendChild(empty);
+                return;
+            }
+
+            const renderItems = (items, parentEl, depth) => {
+                items.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'toc-item' + (depth > 0 ? ' toc-child' : '');
+                    div.style.paddingLeft = (depth * 14 + 6) + 'px';
+
+                    // Clean potential null bytes from bad PDF encodings
+                    const cleanTitle = (item.title || '(untitled)').replace(/\x00/g, '');
+                    div.textContent = cleanTitle;
+                    div.title = cleanTitle;
+
+                    div.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        // pdf.js outline items expose the destination either directly
+                        // as item.dest (a named string or explicit array) or nested
+                        // inside item.url for external links. Some generators also
+                        // emit it via an action object - handle all three cases.
+                        const dest = item.dest || (item.action && item.action.dest) || null;
+                        if (dest) {
+                            const targetPageNum = await resolveDestPageNumber(dest);
+                            if (targetPageNum) {
+                                scrollToPage(targetPageNum);
+                                // Highlight which item was clicked
+                                tocListEl.querySelectorAll('.toc-item.toc-active').forEach(el => el.classList.remove('toc-active'));
+                                div.classList.add('toc-active');
+                            }
+                        } else if (item.url) {
+                            vscodeApi.postMessage({ type: 'open-external', url: item.url });
+                        }
+                    });
+
+                    parentEl.appendChild(div);
+                    if (item.items && item.items.length > 0) {
+                        renderItems(item.items, parentEl, depth + 1);
+                    }
+                });
+            };
+
+            renderItems(outline, tocListEl, 0);
+        }
+
+        function openTocPanel() {
+            closeSearch();
+            closePropertiesPanel();
+            closeBookmarksPanel();
+            tocPanel.classList.remove('hidden');
+            // Always re-render so switching between documents or re-opening
+            // after "No outline" doesn't show stale content.
+            renderTocList();
+        }
+
+        function closeTocPanel() {
+            tocPanel.classList.add('hidden');
+        }
+
+        toggleTocBtn.addEventListener('click', () => {
+            if (tocPanel.classList.contains('hidden')) {
+                openTocPanel();
+            } else {
+                closeTocPanel();
+            }
+        });
+        tocCloseBtn.addEventListener('click', closeTocPanel);
+
         // ---- Search -----------------------------------------------------------
 
         async function getPageText(pageNum) {
@@ -1557,6 +1787,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         function openSearch() {
             closeBookmarksPanel();
             closePropertiesPanel();
+            if (typeof closeTocPanel === 'function') closeTocPanel();
             searchBar.classList.remove('hidden');
             searchInput.focus();
             searchInput.select();
@@ -1944,6 +2175,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         function openBookmarksPanel() {
             closeSearch();
             closePropertiesPanel();
+            if (typeof closeTocPanel === 'function') closeTocPanel();
             bookmarksPanel.classList.remove('hidden');
             renderBookmarksList();
         }
@@ -2045,6 +2277,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         function openPropertiesPanel() {
             closeSearch();
             closeBookmarksPanel();
+            if (typeof closeTocPanel === 'function') closeTocPanel();
             propertiesPanel.classList.remove('hidden');
             renderPropertiesList();
         }
@@ -2078,6 +2311,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 // default zoom and then re-rendering.
                 if (pendingViewState && typeof pendingViewState.scale === 'number') {
                     currentScale = clampScale(pendingViewState.scale);
+                }
+                if (pendingViewState && pendingViewState.highContrast) {
+                    applyHighContrast(true);
                 }
                 // Capture the restore target in a local const, independent of the
                 // currentPage variable - layoutPages() below populates placeholders
@@ -2167,6 +2403,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'toggle-annotate': setAnnotateMode(!annotateMode); break;
                 case 'toggle-bookmarks': toggleBookmarksBtn.click(); break;
                 case 'bookmark-current-page': bookmarkToggleCurrentBtn.click(); break;
+                case 'toggle-toc': toggleTocBtn.click(); break;
+                case 'toggle-high-contrast': toggleContrastBtn.click(); break;
+                case 'copy-page-image': copyPageBtn.click(); break;
+                case 'rotate-view': rotateViewBtn.click(); break;
+                case 'toggle-properties': togglePropertiesBtn.click(); break;
             }
         }
 
@@ -2224,6 +2465,7 @@ function storeAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri, ann
 interface PdfViewState {
     page: number;
     scale: number;
+    highContrast?: boolean;
 }
 
 function getViewStateStorageKey(uri: vscode.Uri): string {

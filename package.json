@@ -2,12 +2,13 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "A simple PDF viewer for VS Code",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
     "url": "https://github.com/AnandShah10/PDFDisplay.git"
   },
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -68,6 +69,26 @@
       {
         "command": "pdfDisplay.bookmarkCurrentPage",
         "title": "PDF Display: Bookmark Current Page"
+      },
+      {
+        "command": "pdfDisplay.toggleToc",
+        "title": "PDF Display: Toggle Table of Contents"
+      },
+      {
+        "command": "pdfDisplay.toggleHighContrast",
+        "title": "PDF Display: Toggle High Contrast Mode"
+      },
+      {
+        "command": "pdfDisplay.copyPageImage",
+        "title": "PDF Display: Copy Current Page Image"
+      },
+      {
+        "command": "pdfDisplay.rotateView",
+        "title": "PDF Display: Rotate View"
+      },
+      {
+        "command": "pdfDisplay.toggleProperties",
+        "title": "PDF Display: Toggle Document Properties"
       }
     ],
     "keybindings": [
@@ -85,6 +106,36 @@
       {
         "command": "pdfDisplay.prevPage",
         "key": "pageup",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.toggleToc",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.toggleHighContrast",
+        "key": "ctrl+alt+h",
+        "mac": "cmd+alt+h",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.copyPageImage",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.rotateView",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.toggleProperties",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       }
     ],
