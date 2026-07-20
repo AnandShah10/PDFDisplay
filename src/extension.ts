@@ -154,6 +154,26 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             } else if (msg?.type === 'save-bookmarks') {
                 storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
+            } else if (msg?.type === 'debug-log') {
+                // Forwarded from the webview's own console (see debugLog() in the
+                // webview script) so its trace shows up in this same console too.
+                console.log('[pdfDisplay:webview]', msg.message);
+            } else if (msg?.type === 'open-external') {
+                // Webviews can't navigate to arbitrary external sites directly;
+                // hand the URL to VS Code to open in the system's default browser.
+                if (typeof msg.url === 'string') {
+                    try {
+                        vscode.env.openExternal(vscode.Uri.parse(msg.url));
+                    } catch (e) {
+                        // malformed URL from a PDF link annotation - ignore rather than throw
+                    }
+                }
+            } else if (msg?.type === 'open-file-link') {
+                // Cross-document link (GoToR action) - a bare filename pointing
+                // at another local PDF, resolved relative to this document.
+                if (typeof msg.target === 'string') {
+                    resolveAndOpenLinkedFile(document.uri, msg.target);
+                }
             }
         });
 
@@ -648,6 +668,84 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             padding: 12px 0;
         }
 
+        #properties-panel {
+            position: fixed;
+            top: 56px;
+            right: 20px;
+            width: 280px;
+            max-height: 400px;
+            background-color: var(--toolbar-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 10px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #properties-panel.hidden {
+            display: none;
+        }
+
+        .properties-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        #properties-list {
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 12px;
+        }
+
+        .property-row {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        .property-label {
+            color: var(--muted-text-color);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .property-value {
+            color: var(--text-color);
+            word-break: break-word;
+        }
+
+        .link-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .link-annotation {
+            position: absolute;
+            cursor: pointer;
+            pointer-events: auto;
+            border-radius: 2px;
+        }
+
+        .link-annotation:hover {
+            outline: 1px solid var(--vscode-textLink-foreground, #3794ff);
+            outline-offset: 1px;
+            background-color: rgba(55, 148, 255, 0.1);
+        }
+
         #loading-overlay {
             position: fixed;
             top: 48px;
@@ -699,6 +797,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
         <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
         <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
+        <button id="rotate-view" class="toolbar-btn" title="Rotate view" disabled>&#8635;</button>
+        <button id="toggle-properties" class="toolbar-btn" title="Document properties" disabled>&#8505;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -731,6 +831,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <div id="bookmarks-list"></div>
     </div>
 
+    <div id="properties-panel" class="hidden">
+        <div class="properties-header">
+            <span>Document Properties</span>
+            <button id="properties-close" class="toolbar-btn" title="Close">&times;</button>
+        </div>
+        <div id="properties-list"></div>
+    </div>
+
     <div id="loading-overlay">
         <div class="spinner"></div>
         <div id="loading-text">Loading PDF document...</div>
@@ -744,9 +852,32 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     <script nonce="${nonce}">
         const vscodeApi = acquireVsCodeApi();
 
+        // Mirrors to the extension host's own console (visible via Help > Toggle
+        // Developer Tools, or the Debug Console when running via F5) in addition to
+        // this webview's own devtools console (Command Palette > "Developer: Open
+        // Webview Developer Tools") - the latter is a separate window that's easy
+        // to miss, so this makes the same trace visible wherever you're already looking.
+        function debugLog() {
+            const args = Array.prototype.slice.call(arguments);
+            console.log.apply(console, ['[pdfDisplay]'].concat(args));
+            try {
+                const message = args.map(a => {
+                    if (typeof a === 'string') return a;
+                    try { return JSON.stringify(a); } catch (e) { return String(a); }
+                }).join(' ');
+                vscodeApi.postMessage({ type: 'debug-log', message: message });
+            } catch (e) { /* best-effort only */ }
+        }
+
         const container = document.getElementById('viewer-container');
         const loadingOverlay = document.getElementById('loading-overlay');
         const loadingText = document.getElementById('loading-text');
+
+        // The filename is baked into the HTML server-side (see the ${fileName}
+        // template substitutions in getHtmlForWebview) - there's no actual client-
+        // side "fileName" variable, so pull the already-rendered text back out of
+        // the DOM for anything in this script that needs it (e.g. the properties panel).
+        const displayFileName = (document.querySelector('.title').textContent || '').replace(/^\s*\S+\s*/, '').trim();
 
         const toggleSidebarBtn = document.getElementById('toggle-sidebar');
         const thumbnailSidebar = document.getElementById('thumbnail-sidebar');
@@ -766,6 +897,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const bookmarksListEl = document.getElementById('bookmarks-list');
         const bookmarkToggleCurrentBtn = document.getElementById('bookmark-toggle-current');
         const bookmarksCloseBtn = document.getElementById('bookmarks-close');
+
+        const rotateViewBtn = document.getElementById('rotate-view');
+
+        const togglePropertiesBtn = document.getElementById('toggle-properties');
+        const propertiesPanel = document.getElementById('properties-panel');
+        const propertiesListEl = document.getElementById('properties-list');
+        const propertiesCloseBtn = document.getElementById('properties-close');
 
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
@@ -807,10 +945,19 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let totalPages = 0;
         let currentPage = 1;
         let currentScale = 1.5;     // pdf.js viewport scale; BASE_SCALE below maps this to "100%"
+        let currentRotation = 0;    // 0 | 90 | 180 | 270, view-only - never written back to the file
         const BASE_SCALE = 1.5;
         const MIN_SCALE = 0.375;    // ~25%
         const MAX_SCALE = 6.0;      // ~400%
         const ZOOM_STEP = BASE_SCALE * 0.1; // 10% per click
+
+        // Every viewport in the app should go through here so zoom AND rotation
+        // stay consistent everywhere (main pages, thumbnails, text/link/annotation
+        // layers, fit-width calculation) - rotation is view-only, never written
+        // back to the underlying file.
+        function getViewport(page, scale) {
+            return page.getViewport({ scale: scale, rotation: currentRotation });
+        }
 
         let lazyRenderObserver = null;
         let currentPageObserver = null;
@@ -841,6 +988,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let bookmarks = [];              // { pageNum, label, createdAt }[], from extension storage
         let pendingViewState = null;     // { page, scale } to restore once the doc has loaded, then discarded
         let isRestoringView = false;     // true while renderPdf is applying pendingViewState; suppresses saves so the intersection-observer's page-1 blip during initial layout can't clobber the state we're mid-restore of
+
+        // ---- Links + document properties state ---------------------------------
+        const pageAnnotationsCache = new Map(); // pageNum -> pdf.js annotations array, fetched once per page
+        let fileSizeBytes = 0;
+        let documentMetadata = null;     // { info, metadata } from pdfDoc.getMetadata(), fetched once
         let viewStateSaveTimer = null;
 
         function updateZoomLabel() {
@@ -867,22 +1019,22 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         function flushViewStateSave() {
             if (!pdfDoc || isRestoringView) {
-                console.log('[pdfDisplay] flushViewStateSave skipped', { hasPdfDoc: !!pdfDoc, isRestoringView });
+                debugLog('flushViewStateSave skipped', { hasPdfDoc: !!pdfDoc, isRestoringView });
                 return;
             }
             clearTimeout(viewStateSaveTimer);
-            console.log('[pdfDisplay] sending save-view-state', { page: currentPage, scale: currentScale });
+            debugLog('sending save-view-state', { page: currentPage, scale: currentScale });
             vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale });
         }
 
         document.addEventListener('visibilitychange', () => {
-            console.log('[pdfDisplay] visibilitychange, state=', document.visibilityState);
+            debugLog('visibilitychange, state=', document.visibilityState);
             if (document.visibilityState === 'hidden') {
                 flushViewStateSave();
             }
         });
         window.addEventListener('pagehide', () => {
-            console.log('[pdfDisplay] pagehide fired');
+            debugLog('pagehide fired');
             flushViewStateSave();
         });
 
@@ -897,7 +1049,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -924,9 +1076,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
             for (let i = 1; i <= totalPages; i++) {
                 const page = await pdfDoc.getPage(i);
-                const naturalViewport = page.getViewport({ scale: 1 });
+                const naturalViewport = getViewport(page, 1);
                 const scale = THUMB_WIDTH / naturalViewport.width;
-                const viewport = page.getViewport({ scale });
+                const viewport = getViewport(page, scale);
 
                 const thumb = document.createElement('div');
                 thumb.className = 'thumb-container thumb-placeholder';
@@ -952,9 +1104,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             const pageNum = Number(thumbEl.dataset.pageNumber);
             try {
                 const page = await pdfDoc.getPage(pageNum);
-                const naturalViewport = page.getViewport({ scale: 1 });
+                const naturalViewport = getViewport(page, 1);
                 const scale = THUMB_WIDTH / naturalViewport.width;
-                const viewport = page.getViewport({ scale });
+                const viewport = getViewport(page, scale);
                 const dpr = window.devicePixelRatio || 1;
 
                 const canvas = document.createElement('canvas');
@@ -1042,7 +1194,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             const pageNum = Number(pageContainer.dataset.pageNumber);
             try {
                 const page = await pdfDoc.getPage(pageNum);
-                const viewport = page.getViewport({ scale: currentScale });
+                const viewport = getViewport(page, currentScale);
 
                 const canvas = document.createElement('canvas');
                 const context = canvas.getContext('2d');
@@ -1071,6 +1223,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 // Sticky-note pins for this page, positioned from their stored
                 // ratio-of-page coordinates so they land correctly at any zoom level.
                 buildAnnotationLayer(pageContainer, pageNum, viewport);
+
+                // Clickable overlays for the PDF's own link annotations (internal
+                // page-jump links and external URLs) - invisible, the document's
+                // own rendering already shows whatever visual styling the link has
+                // (underline, blue text, etc.) baked into the canvas.
+                const pageLinks = await getPageAnnotations(page, pageNum);
+                buildLinkLayer(pageContainer, pageLinks, viewport);
             } catch (err) {
                 pageContainer.textContent = 'Failed to render page ' + pageNum;
                 pageContainer.style.color = 'var(--vscode-errorForeground, #ff4d4d)';
@@ -1131,7 +1290,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
             for (let i = 1; i <= totalPages; i++) {
                 const page = await pdfDoc.getPage(i);
-                const viewport = page.getViewport({ scale: currentScale });
+                const viewport = getViewport(page, currentScale);
 
                 const pageContainer = document.createElement('div');
                 pageContainer.className = 'page-container page-placeholder';
@@ -1185,10 +1344,26 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         zoomFitWidthBtn.addEventListener('click', async () => {
             if (!pdfDoc) return;
             const firstPage = await pdfDoc.getPage(1);
-            const naturalViewport = firstPage.getViewport({ scale: 1 });
+            const naturalViewport = getViewport(firstPage, 1);
             const availableWidth = container.clientWidth - 48; // leave a little breathing room
             applyZoom(availableWidth / naturalViewport.width);
         });
+
+        // View-only rotation (never written back to the file) - cycles 0 -> 90 ->
+        // 180 -> 270 -> 0. Every getViewport() call in the app already goes through
+        // the shared helper above, so rebuilding pages/thumbnails at the new
+        // rotation is all that's needed; width/height swap automatically for
+        // 90/270 since those come from the viewport itself.
+        async function applyRotation(newRotation) {
+            currentRotation = ((newRotation % 360) + 360) % 360;
+            const pageToRestore = currentPage;
+            await layoutPages();
+            buildThumbnails();
+            const target = container.querySelector('.page-container[data-page-number="' + pageToRestore + '"]');
+            if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
+        }
+
+        rotateViewBtn.addEventListener('click', () => applyRotation(currentRotation + 90));
 
         // ---- Search -----------------------------------------------------------
 
@@ -1381,6 +1556,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         function openSearch() {
             closeBookmarksPanel();
+            closePropertiesPanel();
             searchBar.classList.remove('hidden');
             searchInput.focus();
             searchInput.select();
@@ -1457,6 +1633,98 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 .forEach(a => layer.appendChild(createPinElement(a, viewport)));
             pageContainer.appendChild(layer);
             return layer;
+        }
+
+        // ---- PDF links (internal page-jump + external URLs) ---------------------
+
+        async function getPageAnnotations(page, pageNum) {
+            if (pageAnnotationsCache.has(pageNum)) return pageAnnotationsCache.get(pageNum);
+            let list = [];
+            try {
+                list = await page.getAnnotations();
+            } catch (e) {
+                list = [];
+            }
+            pageAnnotationsCache.set(pageNum, list);
+            return list;
+        }
+
+        // Resolves a pdf.js link destination (either a named destination string,
+        // or an already-explicit [pageRef, ...] array) to a 1-based page number.
+        async function resolveDestPageNumber(dest) {
+            try {
+                let explicitDest = dest;
+                if (typeof dest === 'string') {
+                    explicitDest = await pdfDoc.getDestination(dest);
+                }
+                if (!explicitDest || !explicitDest[0]) return null;
+                const pageIndex = await pdfDoc.getPageIndex(explicitDest[0]);
+                return pageIndex + 1;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // pdf.js normalizes BOTH plain URI-action links (http://...) and GoToR
+        // "jump to another PDF file" actions into the same .url string field -
+        // for GoToR it's just the bare target filename, optionally with a
+        // "#nameddest=..." or "#[...]" fragment describing where in that other
+        // file to land (see pdf.js's annotation.js GoToR handling). A real
+        // protocol scheme (http:, mailto:, etc.) is what distinguishes the two.
+        const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+
+        function buildLinkLayer(pageContainer, pageAnnotationList, viewport) {
+            const linkAnnotations = pageAnnotationList.filter(a => a.subtype === 'Link' && (a.url || a.dest));
+            if (linkAnnotations.length === 0) return;
+
+            const layer = document.createElement('div');
+            layer.className = 'link-layer';
+
+            linkAnnotations.forEach(ann => {
+                const rect = viewport.convertToViewportRectangle(ann.rect);
+                const x = Math.min(rect[0], rect[2]);
+                const y = Math.min(rect[1], rect[3]);
+                const w = Math.abs(rect[2] - rect[0]);
+                const h = Math.abs(rect[3] - rect[1]);
+
+                const linkEl = document.createElement('div');
+                linkEl.className = 'link-annotation';
+                linkEl.style.left = x + 'px';
+                linkEl.style.top = y + 'px';
+                linkEl.style.width = w + 'px';
+                linkEl.style.height = h + 'px';
+
+                if (ann.url && URL_SCHEME_RE.test(ann.url)) {
+                    // Real external URL - webviews can't navigate to arbitrary
+                    // external sites directly, so hand it to the extension host
+                    // to open in the system's default browser.
+                    linkEl.title = ann.url;
+                    linkEl.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        vscodeApi.postMessage({ type: 'open-external', url: ann.url });
+                    });
+                } else if (ann.url) {
+                    // Cross-document link (GoToR): bare filename, no protocol
+                    // scheme. Resolve and open it as another local PDF.
+                    linkEl.title = 'Open linked file: ' + ann.url;
+                    linkEl.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        vscodeApi.postMessage({ type: 'open-file-link', target: ann.url });
+                    });
+                } else if (ann.dest) {
+                    // Internal link - stays inside the viewer and jumps to the target page.
+                    linkEl.title = 'Go to page';
+                    linkEl.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const targetPageNum = await resolveDestPageNumber(ann.dest);
+                        if (targetPageNum) scrollToPage(targetPageNum);
+                    });
+                }
+
+                layer.appendChild(linkEl);
+            });
+
+            pageContainer.appendChild(layer);
         }
 
         function closeAnnotationPopup() {
@@ -1584,7 +1852,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
             const annotation = { id: createAnnotationId(), pageNum, xRatio, yRatio, text: '', createdAt: Date.now() };
             const page = await pdfDoc.getPage(pageNum);
-            const viewport = page.getViewport({ scale: currentScale });
+            const viewport = getViewport(page, currentScale);
 
             let layer = pageContainer.querySelector('.annotation-layer');
             if (!layer) {
@@ -1675,6 +1943,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         function openBookmarksPanel() {
             closeSearch();
+            closePropertiesPanel();
             bookmarksPanel.classList.remove('hidden');
             renderBookmarksList();
         }
@@ -1692,12 +1961,114 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         });
         bookmarksCloseBtn.addEventListener('click', closeBookmarksPanel);
 
+        // ---- Document properties -------------------------------------------------
+
+        function formatFileSize(bytes) {
+            if (!bytes && bytes !== 0) return 'Unknown';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        // PDF metadata dates look like "D:20230115143000+05'30'" - parse the parts
+        // pdf.js gives us and fall back to showing the raw string if it's malformed.
+        function formatPdfDate(pdfDate) {
+            if (!pdfDate || typeof pdfDate !== 'string') return null;
+            const m = /^D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?/.exec(pdfDate);
+            if (!m) return pdfDate;
+            const year = m[1], month = m[2] || '01', day = m[3] || '01';
+            const hour = m[4] || '00', minute = m[5] || '00', second = m[6] || '00';
+            const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
+            return isNaN(date.getTime()) ? pdfDate : date.toLocaleString();
+        }
+
+        function addPropertyRow(label, value) {
+            if (!value) return;
+            const row = document.createElement('div');
+            row.className = 'property-row';
+
+            const labelEl = document.createElement('div');
+            labelEl.className = 'property-label';
+            labelEl.textContent = label;
+
+            const valueEl = document.createElement('div');
+            valueEl.className = 'property-value';
+            valueEl.textContent = value;
+
+            row.appendChild(labelEl);
+            row.appendChild(valueEl);
+            propertiesListEl.appendChild(row);
+        }
+
+        async function renderPropertiesList() {
+            propertiesListEl.innerHTML = '';
+
+            try {
+                addPropertyRow('File name', displayFileName);
+                addPropertyRow('File size', formatFileSize(fileSizeBytes));
+                addPropertyRow('Pages', totalPages ? String(totalPages) : null);
+
+                if (!documentMetadata) {
+                    try {
+                        documentMetadata = await pdfDoc.getMetadata();
+                    } catch (e) {
+                        documentMetadata = { info: {} };
+                    }
+                }
+                const info = (documentMetadata && documentMetadata.info) || {};
+
+                addPropertyRow('PDF version', info.PDFFormatVersion || null);
+                addPropertyRow('Title', info.Title);
+                addPropertyRow('Author', info.Author);
+                addPropertyRow('Subject', info.Subject);
+                addPropertyRow('Producer', info.Producer);
+                addPropertyRow('Created', formatPdfDate(info.CreationDate));
+                addPropertyRow('Modified', formatPdfDate(info.ModDate));
+            } catch (err) {
+                debugLog('renderPropertiesList error', (err && err.message) || String(err));
+                propertiesListEl.innerHTML = '';
+                const errorEl = document.createElement('div');
+                errorEl.className = 'bookmarks-empty';
+                errorEl.textContent = 'Could not load properties.';
+                propertiesListEl.appendChild(errorEl);
+                return;
+            }
+
+            if (!propertiesListEl.children.length) {
+                const empty = document.createElement('div');
+                empty.className = 'bookmarks-empty';
+                empty.textContent = 'No properties available';
+                propertiesListEl.appendChild(empty);
+            }
+        }
+
+        function openPropertiesPanel() {
+            closeSearch();
+            closeBookmarksPanel();
+            propertiesPanel.classList.remove('hidden');
+            renderPropertiesList();
+        }
+
+        function closePropertiesPanel() {
+            propertiesPanel.classList.add('hidden');
+        }
+
+        togglePropertiesBtn.addEventListener('click', () => {
+            if (propertiesPanel.classList.contains('hidden')) {
+                openPropertiesPanel();
+            } else {
+                closePropertiesPanel();
+            }
+        });
+        propertiesCloseBtn.addEventListener('click', closePropertiesPanel);
+
         async function renderPdf(bytes) {
             try {
                 // bytes arrives as a plain number array (see extension-side comment on
                 // why we don't rely on Uint8Array surviving postMessage) - pdf.js
                 // requires an actual TypedArray/string/array-like, so rebuild it here.
                 const typedBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+                fileSizeBytes = typedBytes.length;
                 const loadingTask = pdfjsLib.getDocument({ data: typedBytes });
                 pdfDoc = await loadingTask.promise;
                 totalPages = pdfDoc.numPages;
@@ -1718,7 +2089,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     ? Math.min(totalPages, Math.max(1, pendingViewState.page))
                     : 1;
                 currentPage = targetPage;
-                console.log('[pdfDisplay] computed targetPage=', targetPage, 'from pendingViewState=', pendingViewState, 'totalPages=', totalPages);
+                debugLog('computed targetPage=', targetPage, 'from pendingViewState=', pendingViewState, 'totalPages=', totalPages);
 
                 loadingOverlay.style.display = 'none';
 
@@ -1742,7 +2113,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     // Instant jump, not a smooth animated scroll - restoring position
                     // on open should feel like "it was already there", not a scroll gesture.
                     const target = container.querySelector('.page-container[data-page-number="' + targetPage + '"]');
-                    console.log('[pdfDisplay] restoring scroll to page', targetPage, 'found target element:', !!target);
+                    debugLog('restoring scroll to page', targetPage, 'found target element:', !!target);
                     if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
                 }
                 updatePageControls();
@@ -1764,7 +2135,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     updatePageControls();
                     pendingViewState = null;
                     isRestoringView = false;
-                    console.log('[pdfDisplay] restore guard lifted, currentPage=', currentPage);
+                    debugLog('restore guard lifted, currentPage=', currentPage);
                 }, 500);
             } catch (error) {
                 isRestoringView = false;
@@ -1806,7 +2177,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 annotations = Array.isArray(msg.annotations) ? msg.annotations : [];
                 bookmarks = Array.isArray(msg.bookmarks) ? msg.bookmarks : [];
                 pendingViewState = (msg.viewState && typeof msg.viewState === 'object') ? msg.viewState : null;
-                console.log('[pdfDisplay] received pdf-data, viewState=', pendingViewState);
+                debugLog('received pdf-data, viewState=', pendingViewState);
                 renderPdf(msg.data);
             } else if (msg.type === 'pdf-error') {
                 pdfDataReceived = true;
@@ -1877,6 +2248,45 @@ function getStoredBookmarks(context: vscode.ExtensionContext, uri: vscode.Uri): 
 
 function storeBookmarks(context: vscode.ExtensionContext, uri: vscode.Uri, bookmarks: unknown[]): Thenable<void> {
     return context.globalState.update(getBookmarksStorageKey(uri), bookmarks);
+}
+
+// Resolves a cross-document link (GoToR action) target and opens it. pdf.js
+// encodes these as a bare filename, optionally with a "#nameddest=..." or
+// "#[...]" fragment describing a destination *within* the target file (see
+// pdf.js's annotation.js) - we don't currently resolve that specific
+// destination, just open the target file itself, which is still the core of
+// what a GoToR link is for.
+async function resolveAndOpenLinkedFile(currentUri: vscode.Uri, rawTarget: string): Promise<void> {
+    const filePart = rawTarget.split('#')[0];
+    if (!filePart) {
+        vscode.window.showErrorMessage('pdfDisplay: this link does not point to a valid file.');
+        return;
+    }
+
+    let targetUri: vscode.Uri;
+    try {
+        const isAbsolute = /^[a-zA-Z]:[\\/]/.test(filePart) || filePart.startsWith('/');
+        targetUri = isAbsolute
+            ? vscode.Uri.file(filePart)
+            : vscode.Uri.joinPath(currentUri, '..', filePart);
+    } catch (e) {
+        vscode.window.showErrorMessage(`pdfDisplay: could not resolve linked file "${filePart}".`);
+        return;
+    }
+
+    try {
+        await vscode.workspace.fs.stat(targetUri);
+    } catch (e) {
+        vscode.window.showErrorMessage(`pdfDisplay: linked file not found - ${targetUri.fsPath}`);
+        return;
+    }
+
+    if (targetUri.fsPath.toLowerCase().endsWith('.pdf')) {
+        vscode.commands.executeCommand('vscode.openWith', targetUri, PdfViewerProvider.viewType);
+    } else {
+        // Not a PDF - let VS Code pick whatever handler is appropriate for it.
+        vscode.commands.executeCommand('vscode.open', targetUri);
+    }
 }
 
 function escapeHtml(value: string): string {

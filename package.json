@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "A simple PDF viewer for VS Code",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
