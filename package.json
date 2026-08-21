@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "A simple PDF viewer for VS Code",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -83,12 +83,24 @@
         "title": "PDF Display: Copy Current Page Image"
       },
       {
+        "command": "pdfDisplay.copyPageImages",
+        "title": "PDF Display: Copy Images From Page"
+      },
+      {
         "command": "pdfDisplay.rotateView",
         "title": "PDF Display: Rotate View"
       },
       {
         "command": "pdfDisplay.toggleProperties",
         "title": "PDF Display: Toggle Document Properties"
+      },
+      {
+        "command": "pdfDisplay.exportAnnotatedPdf",
+        "title": "PDF Display: Download Annotated PDF"
+      },
+      {
+        "command": "pdfDisplay.exportAnnotations",
+        "title": "PDF Display: Export Annotations as JSON"
       }
     ],
     "keybindings": [

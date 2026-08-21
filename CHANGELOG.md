@@ -2,7 +2,13 @@
 
 All notable changes to the "PDFDisplay" extension will be documented in this file.
 
-## [Unreleased]
+## [0.0.16]
+- Added full annotation export support:
+  - "Export Annotated PDF" command bakes sticky notes (as visible pins + text callouts) into a new PDF using pdf-lib.
+  - "Export Annotations as JSON" for portable backup, versioning, or external use.
+- Improved embedded image extraction, TOC rendering, cross-document (GoToR) link support, and view state persistence.
+
+## [0.0.15]
 - Added High Contrast Mode toggle.
 - Added Table of Contents (TOC) sidebar.
 - Added Reading Progress indicator.

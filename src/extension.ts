@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import { PDFDocument, StandardFonts, rgb, PDFFont } from 'pdf-lib';
 
 export function activate(context: vscode.ExtensionContext) {
     const provider = new PdfViewerProvider(context);
@@ -62,6 +63,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('pdfDisplay.toggleToc', () => postToActivePanel('toggle-toc')),
         vscode.commands.registerCommand('pdfDisplay.toggleHighContrast', () => postToActivePanel('toggle-high-contrast')),
         vscode.commands.registerCommand('pdfDisplay.copyPageImage', () => postToActivePanel('copy-page-image')),
+        vscode.commands.registerCommand('pdfDisplay.copyPageImages', () => postToActivePanel('copy-page-images')),
         vscode.commands.registerCommand('pdfDisplay.rotateView', () => postToActivePanel('rotate-view')),
         vscode.commands.registerCommand('pdfDisplay.toggleProperties', () => postToActivePanel('toggle-properties')),
         vscode.commands.registerCommand('pdfDisplay.goToPage', async () => {
@@ -76,6 +78,22 @@ export function activate(context: vscode.ExtensionContext) {
             if (value) {
                 postToActivePanel('go-to-page', Number(value));
             }
+        }),
+        vscode.commands.registerCommand('pdfDisplay.exportAnnotatedPdf', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) {
+                vscode.window.showInformationMessage('Open a PDF first.');
+                return;
+            }
+            await exportAnnotatedPdf(context, uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.exportAnnotations', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) {
+                vscode.window.showInformationMessage('Open a PDF first.');
+                return;
+            }
+            await exportAnnotationsJson(context, uri);
         })
     );
 }
@@ -86,6 +104,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     // Tracks whichever PDF panel is currently focused, so Command Palette actions
     // (registered once in activate()) know which webview to forward them to.
     public static activePanel: vscode.WebviewPanel | undefined;
+
+    // Companion to activePanel - lets Command Palette actions that only need the
+    // extension-host side of things (export commands below) act on the right
+    // document without needing a round trip through the webview at all.
+    public static activeDocumentUri: vscode.Uri | undefined;
 
     constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -179,6 +202,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 if (typeof msg.target === 'string') {
                     resolveAndOpenLinkedFile(document.uri, msg.target);
                 }
+            } else if (msg?.type === 'export-annotated-pdf') {
+                exportAnnotatedPdf(this.context, document.uri);
+            } else if (msg?.type === 'export-annotations') {
+                exportAnnotationsJson(this.context, document.uri);
             }
         });
 
@@ -188,18 +215,22 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // focus so commands registered once in activate() know where to send actions.
         if (webviewPanel.active) {
             PdfViewerProvider.activePanel = webviewPanel;
+            PdfViewerProvider.activeDocumentUri = document.uri;
         }
         webviewPanel.onDidChangeViewState(e => {
             if (e.webviewPanel.active) {
                 PdfViewerProvider.activePanel = e.webviewPanel;
+                PdfViewerProvider.activeDocumentUri = document.uri;
             } else if (PdfViewerProvider.activePanel === e.webviewPanel) {
                 PdfViewerProvider.activePanel = undefined;
+                PdfViewerProvider.activeDocumentUri = undefined;
             }
         });
 
         webviewPanel.onDidDispose(() => {
             if (PdfViewerProvider.activePanel === webviewPanel) {
                 PdfViewerProvider.activePanel = undefined;
+                PdfViewerProvider.activeDocumentUri = undefined;
             }
         });
     }
@@ -872,6 +903,71 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             background-color: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.35));
             color: var(--text-color) !important;
         }
+
+        #images-panel {
+            position: fixed;
+            top: 56px;
+            right: 20px;
+            width: 260px;
+            max-height: 400px;
+            background-color: var(--toolbar-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 10px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #images-panel.hidden {
+            display: none;
+        }
+
+        .images-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        #images-list {
+            overflow-y: auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .image-thumb-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            cursor: pointer;
+            border-radius: 4px;
+            padding: 6px;
+            background-color: rgba(255,255,255,0.04);
+        }
+
+        .image-thumb-item:hover {
+            background-color: var(--hover-bg);
+        }
+
+        .image-thumb-item canvas {
+            width: 100%;
+            height: 70px;
+            object-fit: contain;
+            background-color: repeating-conic-gradient(#80808022 0% 25%, transparent 0% 50%) 50% / 12px 12px;
+            border-radius: 2px;
+        }
+
+        .image-thumb-label {
+            font-size: 10px;
+            color: var(--muted-text-color);
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -883,8 +979,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
         <button id="toggle-contrast" class="toolbar-btn" title="Toggle High Contrast" disabled>&#9680;</button>
         <button id="copy-page" class="toolbar-btn" title="Copy Current Page" disabled>&#128203;</button>
+        <button id="copy-images" class="toolbar-btn" title="Copy Images From Page" disabled>&#128247;</button>
         <button id="rotate-view" class="toolbar-btn" title="Rotate view" disabled>&#8635;</button>
         <button id="toggle-properties" class="toolbar-btn" title="Document properties" disabled>&#8505;</button>
+        <button id="export-annotated-pdf" class="toolbar-btn" title="Download Annotated PDF" disabled>&#128190;</button>
+        <button id="export-annotations" class="toolbar-btn" title="Export Annotations as JSON" disabled>&#128228;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -933,6 +1032,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="toc-close" class="toolbar-btn" title="Close">&times;</button>
         </div>
         <div id="toc-list"></div>
+    </div>
+
+    <div id="images-panel" class="hidden">
+        <div class="images-header">
+            <span id="images-panel-title">Images on This Page</span>
+            <button id="images-close" class="toolbar-btn" title="Close">&times;</button>
+        </div>
+        <div id="images-list"></div>
     </div>
 
     <div id="loading-overlay">
@@ -1001,6 +1108,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const propertiesListEl = document.getElementById('properties-list');
         const propertiesCloseBtn = document.getElementById('properties-close');
 
+        const exportAnnotatedPdfBtn = document.getElementById('export-annotated-pdf');
+        const exportAnnotationsBtn = document.getElementById('export-annotations');
+
         const toggleTocBtn = document.getElementById('toggle-toc');
         const tocPanel = document.getElementById('toc-panel');
         const tocListEl = document.getElementById('toc-list');
@@ -1009,6 +1119,12 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const toggleContrastBtn = document.getElementById('toggle-contrast');
         const copyPageBtn = document.getElementById('copy-page');
         const readingProgress = document.getElementById('reading-progress');
+
+        const copyImagesBtn = document.getElementById('copy-images');
+        const imagesPanel = document.getElementById('images-panel');
+        const imagesPanelTitle = document.getElementById('images-panel-title');
+        const imagesListEl = document.getElementById('images-list');
+        const imagesCloseBtn = document.getElementById('images-close');
 
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
@@ -1160,7 +1276,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -1506,6 +1622,222 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             }
         });
 
+        // ---- Copy embedded images from the current page ------------------------
+        // Distinct from "Copy Current Page" above: that copies a screenshot of the
+        // whole rendered page, this extracts the actual raster images embedded in
+        // the PDF page content (photos, figures, etc.) so you can copy just one of
+        // them at full resolution rather than the whole page.
+
+        // Walks the page's operator list for paintImageXObject ops (the drawing
+        // instruction pdf.js uses for embedded raster images) and resolves each
+        // referenced image object. This is inherently a bit version-sensitive since
+        // it reaches into how pdf.js internally represents decoded image data;
+        // extraction failures are handled per-image so one bad image can't block
+        // the rest, and if literally nothing can be extracted the panel says so
+        // rather than silently appearing empty.
+        async function extractPageImages(pageNum) {
+            const page = await pdfDoc.getPage(pageNum);
+            const opList = await page.getOperatorList();
+
+            const objIds = [];
+            const seen = new Set();
+            for (let i = 0; i < opList.fnArray.length; i++) {
+                const fn = opList.fnArray[i];
+                if (fn === pdfjsLib.OPS.paintImageXObject) {
+                    const objId = opList.argsArray[i][0];
+                    if (typeof objId === 'string' && !seen.has(objId)) {
+                        seen.add(objId);
+                        objIds.push(objId);
+                    }
+                }
+            }
+
+            const results = [];
+            for (const objId of objIds) {
+                try {
+                    const imgObj = await new Promise((resolve) => {
+                        if (page.objs.has(objId)) {
+                            resolve(page.objs.get(objId));
+                        } else {
+                            page.objs.get(objId, resolve);
+                        }
+                    });
+                    const canvas = imageObjToCanvas(imgObj);
+                    if (canvas) results.push({ objId, canvas });
+                } catch (e) {
+                    debugLog('extractPageImages: failed to resolve', objId, (e && e.message) || String(e));
+                }
+            }
+            return results;
+        }
+
+        // Converts whatever shape pdf.js resolved an image object to into a plain
+        // <canvas> so it can be shown as a thumbnail and copied via toBlob().
+        function imageObjToCanvas(imgObj) {
+            if (!imgObj) return null;
+
+            // Some pdf.js builds resolve directly to a drawable (ImageBitmap or
+            // an HTMLImageElement/HTMLCanvasElement-like object with width/height).
+            if (typeof ImageBitmap !== 'undefined' && imgObj instanceof ImageBitmap) {
+                const canvas = document.createElement('canvas');
+                canvas.width = imgObj.width;
+                canvas.height = imgObj.height;
+                canvas.getContext('2d').drawImage(imgObj, 0, 0);
+                return canvas;
+            }
+            if (imgObj.bitmap) {
+                return imageObjToCanvas(imgObj.bitmap);
+            }
+
+            // Older/other builds resolve to raw pixel data: { width, height, data, kind }.
+            if (imgObj.data && imgObj.width && imgObj.height) {
+                const rgba = toRgbaBytes(imgObj);
+                if (!rgba) return null;
+                const canvas = document.createElement('canvas');
+                canvas.width = imgObj.width;
+                canvas.height = imgObj.height;
+                try {
+                    canvas.getContext('2d').putImageData(new ImageData(rgba, imgObj.width, imgObj.height), 0, 0);
+                } catch (e) {
+                    return null;
+                }
+                return canvas;
+            }
+
+            return null;
+        }
+
+        // Normalizes pdf.js's raw image pixel formats (RGBA/RGB/1-bit grayscale)
+        // into a flat RGBA byte array a canvas ImageData can use directly.
+        function toRgbaBytes(imgObj) {
+            const data = imgObj.data;
+            const width = imgObj.width;
+            const height = imgObj.height;
+            const pixelCount = width * height;
+            const out = new Uint8ClampedArray(pixelCount * 4);
+            const KIND = (pdfjsLib && pdfjsLib.ImageKind) || {};
+
+            if (data.length === pixelCount * 4 || imgObj.kind === KIND.RGBA_32BPP) {
+                out.set(data.subarray ? data.subarray(0, out.length) : data.slice(0, out.length));
+                return out;
+            }
+
+            if (data.length === pixelCount * 3 || imgObj.kind === KIND.RGB_24BPP) {
+                for (let i = 0, j = 0; i < pixelCount; i++, j += 3) {
+                    out[i * 4] = data[j];
+                    out[i * 4 + 1] = data[j + 1];
+                    out[i * 4 + 2] = data[j + 2];
+                    out[i * 4 + 3] = 255;
+                }
+                return out;
+            }
+
+            const rowBytes = Math.ceil(width / 8);
+            if (data.length === rowBytes * height || imgObj.kind === KIND.GRAYSCALE_1BPP) {
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const byte = data[y * rowBytes + (x >> 3)];
+                        const bit = (byte >> (7 - (x & 7))) & 1;
+                        const v = bit ? 255 : 0;
+                        const idx = (y * width + x) * 4;
+                        out[idx] = out[idx + 1] = out[idx + 2] = v;
+                        out[idx + 3] = 255;
+                    }
+                }
+                return out;
+            }
+
+            // Unrecognized pixel format - bail rather than render garbage.
+            return null;
+        }
+
+        async function copyCanvasToClipboard(canvas, triggerBtn) {
+            return new Promise((resolve) => {
+                canvas.toBlob((blob) => {
+                    if (!blob) { resolve(false); return; }
+                    navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+                        .then(() => resolve(true))
+                        .catch((err) => {
+                            debugLog('Clipboard error:', (err && err.message) || String(err));
+                            resolve(false);
+                        });
+                }, 'image/png');
+            });
+        }
+
+        function flashButton(btn, glyph) {
+            const original = btn.innerHTML;
+            btn.innerHTML = glyph;
+            setTimeout(() => { btn.innerHTML = original; }, 1200);
+        }
+
+        function closeImagesPanel() {
+            imagesPanel.classList.add('hidden');
+        }
+        imagesCloseBtn.addEventListener('click', closeImagesPanel);
+
+        copyImagesBtn.addEventListener('click', async () => {
+            if (!pdfDoc) return;
+            closeSearch();
+            closeBookmarksPanel();
+            closePropertiesPanel();
+            if (typeof closeTocPanel === 'function') closeTocPanel();
+
+            const originalIcon = copyImagesBtn.innerHTML;
+            copyImagesBtn.innerHTML = '&#8987;'; // hourglass while extracting
+            let found = [];
+            try {
+                found = await extractPageImages(currentPage);
+            } catch (e) {
+                debugLog('copyImagesBtn: extraction failed', (e && e.message) || String(e));
+            }
+            copyImagesBtn.innerHTML = originalIcon;
+
+            if (found.length === 0) {
+                imagesPanelTitle.textContent = 'No images found on page ' + currentPage;
+                imagesListEl.innerHTML = '';
+                imagesPanel.classList.remove('hidden');
+                return;
+            }
+
+            if (found.length === 1) {
+                // Single image - copy it directly, same one-click feel as "Copy Current Page".
+                const ok = await copyCanvasToClipboard(found[0].canvas, copyImagesBtn);
+                flashButton(copyImagesBtn, ok ? '&#10003;' : '&#10007;');
+                return;
+            }
+
+            // Multiple images on the page - let the user pick which one(s) to copy.
+            imagesPanelTitle.textContent = found.length + ' images on page ' + currentPage;
+            imagesListEl.innerHTML = '';
+            found.forEach((item, idx) => {
+                const wrap = document.createElement('div');
+                wrap.className = 'image-thumb-item';
+                wrap.title = 'Click to copy this image';
+
+                const thumbCanvas = document.createElement('canvas');
+                thumbCanvas.width = item.canvas.width;
+                thumbCanvas.height = item.canvas.height;
+                thumbCanvas.getContext('2d').drawImage(item.canvas, 0, 0);
+                wrap.appendChild(thumbCanvas);
+
+                const label = document.createElement('div');
+                label.className = 'image-thumb-label';
+                label.textContent = item.canvas.width + '\u00d7' + item.canvas.height;
+                wrap.appendChild(label);
+
+                wrap.addEventListener('click', async () => {
+                    const ok = await copyCanvasToClipboard(item.canvas);
+                    label.textContent = ok ? 'Copied!' : 'Copy failed';
+                    setTimeout(() => { label.textContent = item.canvas.width + '\u00d7' + item.canvas.height; }, 1200);
+                });
+
+                imagesListEl.appendChild(wrap);
+            });
+
+            imagesPanel.classList.remove('hidden');
+        });
+
         // Table of Contents
         async function renderTocList() {
             if (!pdfDoc) {
@@ -1576,6 +1908,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closeSearch();
             closePropertiesPanel();
             closeBookmarksPanel();
+            closeImagesPanel();
             tocPanel.classList.remove('hidden');
             // Always re-render so switching between documents or re-opening
             // after "No outline" doesn't show stale content.
@@ -1788,6 +2121,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closeBookmarksPanel();
             closePropertiesPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
+            closeImagesPanel();
             searchBar.classList.remove('hidden');
             searchInput.focus();
             searchInput.select();
@@ -2176,6 +2510,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closeSearch();
             closePropertiesPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
+            closeImagesPanel();
             bookmarksPanel.classList.remove('hidden');
             renderBookmarksList();
         }
@@ -2278,6 +2613,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closeSearch();
             closeBookmarksPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
+            closeImagesPanel();
             propertiesPanel.classList.remove('hidden');
             renderPropertiesList();
         }
@@ -2294,6 +2630,19 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             }
         });
         propertiesCloseBtn.addEventListener('click', closePropertiesPanel);
+
+        // ---- Export: annotated PDF + standalone annotations JSON ---------------
+        // Both run entirely in the extension host (it already has direct access to
+        // the raw PDF bytes and stored annotations for this document) - these
+        // buttons just trigger that, no state needs to come from the webview side.
+
+        exportAnnotatedPdfBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'export-annotated-pdf' });
+        });
+
+        exportAnnotationsBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'export-annotations' });
+        });
 
         async function renderPdf(bytes) {
             try {
@@ -2406,6 +2755,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'toggle-toc': toggleTocBtn.click(); break;
                 case 'toggle-high-contrast': toggleContrastBtn.click(); break;
                 case 'copy-page-image': copyPageBtn.click(); break;
+                case 'copy-page-images': copyImagesBtn.click(); break;
                 case 'rotate-view': rotateViewBtn.click(); break;
                 case 'toggle-properties': togglePropertiesBtn.click(); break;
             }
@@ -2529,6 +2879,197 @@ async function resolveAndOpenLinkedFile(currentUri: vscode.Uri, rawTarget: strin
         // Not a PDF - let VS Code pick whatever handler is appropriate for it.
         vscode.commands.executeCommand('vscode.open', targetUri);
     }
+}
+
+// ---- Export: annotated PDF + standalone annotations JSON ------------------
+// Both run entirely in the extension host, using the raw PDF bytes and stored
+// annotations it already has direct access to - no round trip through the
+// webview needed, unlike the toolbar-driven features above.
+
+interface StoredAnnotation {
+    id?: string;
+    pageNum: number;
+    xRatio: number;
+    yRatio: number;
+    text: string;
+    createdAt?: number;
+}
+
+function isStoredAnnotation(value: unknown): value is StoredAnnotation {
+    if (!value || typeof value !== 'object') return false;
+    const rec = value as Record<string, unknown>;
+    return typeof rec.pageNum === 'number'
+        && typeof rec.xRatio === 'number'
+        && typeof rec.yRatio === 'number'
+        && typeof rec.text === 'string';
+}
+
+function wrapTextForPdf(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+    const words = text.split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let current = '';
+    for (const word of words) {
+        const candidate = current ? current + ' ' + word : word;
+        if (font.widthOfTextAtSize(candidate, fontSize) > maxWidth && current) {
+            lines.push(current);
+            current = word;
+        } else {
+            current = candidate;
+        }
+    }
+    if (current) lines.push(current);
+    return lines;
+}
+
+function suggestedExportName(uri: vscode.Uri, suffix: string): string {
+    const baseName = uri.path.split('/').pop() || 'document.pdf';
+    const stem = baseName.toLowerCase().endsWith('.pdf') ? baseName.slice(0, -4) : baseName;
+    return stem + suffix;
+}
+
+// Bakes each sticky note into the page it belongs to as a visible pin + text
+// label, drawn directly onto the page content (not a true interactive PDF
+// /Annots object - pdf-lib's high-level API doesn't support authoring those
+// directly, and hand-building raw annotation dictionaries is considerably
+// more fragile). This is a flattened, portable representation: anyone opening
+// the exported file in any PDF viewer will see the notes, just not be able to
+// edit/dismiss them the way they can in this extension's own sticky notes.
+async function exportAnnotatedPdf(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<void> {
+    const annotations = getStoredAnnotations(context, uri).filter(isStoredAnnotation);
+
+    if (annotations.length === 0) {
+        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to bake into this PDF.');
+        return;
+    }
+
+    let pdfDoc: PDFDocument;
+    try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        pdfDoc = await PDFDocument.load(bytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF for export - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const pages = pdfDoc.getPages();
+    const FONT_SIZE = 9;
+    const PIN_RADIUS = 6;
+    const MAX_TEXT_WIDTH = 220;
+    const MAX_TEXT_LENGTH = 400; // keep a very long note from producing a huge label block
+
+    for (const ann of annotations) {
+        const pageIndex = ann.pageNum - 1;
+        if (pageIndex < 0 || pageIndex >= pages.length) continue; // stale annotation, e.g. from a differently-paginated version of the file
+
+        const page = pages[pageIndex];
+        const { width, height } = page.getSize();
+        // Stored ratios are relative to a top-left origin (screen coordinates);
+        // PDF space has a bottom-left origin, so the Y axis needs flipping.
+        const x = ann.xRatio * width;
+        const y = height - (ann.yRatio * height);
+
+        page.drawCircle({
+            x, y,
+            size: PIN_RADIUS,
+            color: rgb(1, 0.85, 0.2),
+            borderColor: rgb(0.55, 0.4, 0),
+            borderWidth: 1
+        });
+
+        const text = ann.text.length > MAX_TEXT_LENGTH ? ann.text.slice(0, MAX_TEXT_LENGTH) + '…' : ann.text;
+        const lines = wrapTextForPdf(text, font, FONT_SIZE, MAX_TEXT_WIDTH);
+        const lineHeight = FONT_SIZE * 1.3;
+        const boxHeight = lines.length * lineHeight + 8;
+        const boxWidth = MAX_TEXT_WIDTH + 12;
+        const boxX = Math.min(x + PIN_RADIUS + 4, width - boxWidth - 4);
+        const boxY = Math.max(y - boxHeight, 4);
+
+        page.drawRectangle({
+            x: boxX,
+            y: boxY,
+            width: boxWidth,
+            height: boxHeight,
+            color: rgb(1, 0.98, 0.75),
+            borderColor: rgb(0.6, 0.5, 0.1),
+            borderWidth: 0.75,
+            opacity: 0.95
+        });
+
+        lines.forEach((line, i) => {
+            page.drawText(line, {
+                x: boxX + 6,
+                y: boxY + boxHeight - (i + 1) * lineHeight,
+                size: FONT_SIZE,
+                font,
+                color: rgb(0.15, 0.12, 0)
+            });
+        });
+    }
+
+    let outputBytes: Uint8Array;
+    try {
+        outputBytes = await pdfDoc.save();
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to generate the annotated PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const defaultDir = vscode.Uri.joinPath(uri, '..');
+    const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(defaultDir, suggestedExportName(uri, '-annotated.pdf')),
+        filters: { 'PDF': ['pdf'] }
+    });
+    if (!saveUri) return; // user cancelled
+
+    try {
+        await vscode.workspace.fs.writeFile(saveUri, outputBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to save the annotated PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const noteWord = annotations.length === 1 ? 'note' : 'notes';
+    const choice = await vscode.window.showInformationMessage(
+        `Saved annotated PDF with ${annotations.length} ${noteWord} baked in.`,
+        'Open'
+    );
+    if (choice === 'Open') {
+        vscode.commands.executeCommand('vscode.openWith', saveUri, PdfViewerProvider.viewType);
+    }
+}
+
+// Exports just the sticky notes as JSON, independent of the PDF file itself -
+// e.g. for backing them up, diffing across versions, or importing into another tool.
+async function exportAnnotationsJson(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<void> {
+    const annotations = getStoredAnnotations(context, uri);
+    if (!annotations || annotations.length === 0) {
+        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to export for this PDF.');
+        return;
+    }
+
+    const defaultDir = vscode.Uri.joinPath(uri, '..');
+    const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(defaultDir, suggestedExportName(uri, '-annotations.json')),
+        filters: { 'JSON': ['json'] }
+    });
+    if (!saveUri) return; // user cancelled
+
+    const payload = {
+        sourceFile: uri.toString(),
+        exportedAt: new Date().toISOString(),
+        annotations
+    };
+
+    try {
+        await vscode.workspace.fs.writeFile(saveUri, Buffer.from(JSON.stringify(payload, null, 2), 'utf8'));
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to save annotations - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const noteWord = annotations.length === 1 ? 'annotation' : 'annotations';
+    vscode.window.showInformationMessage(`Exported ${annotations.length} ${noteWord}.`);
 }
 
 function escapeHtml(value: string): string {
