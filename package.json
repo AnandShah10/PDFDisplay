@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "A simple PDF viewer for VS Code",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -101,6 +101,14 @@
       {
         "command": "pdfDisplay.exportAnnotations",
         "title": "PDF Display: Export Annotations as JSON"
+      },
+      {
+        "command": "pdfDisplay.toggleGitPanel",
+        "title": "PDF Display: Toggle Git Panel"
+      },
+      {
+        "command": "pdfDisplay.toggleDiffPanel",
+        "title": "PDF Display: Compare PDF Versions"
       }
     ],
     "keybindings": [

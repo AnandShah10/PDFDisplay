@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import * as child_process from 'child_process';
+import * as path from 'path';
 import { PDFDocument, StandardFonts, rgb, PDFFont } from 'pdf-lib';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -66,6 +68,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('pdfDisplay.copyPageImages', () => postToActivePanel('copy-page-images')),
         vscode.commands.registerCommand('pdfDisplay.rotateView', () => postToActivePanel('rotate-view')),
         vscode.commands.registerCommand('pdfDisplay.toggleProperties', () => postToActivePanel('toggle-properties')),
+        vscode.commands.registerCommand('pdfDisplay.toggleGitPanel', () => postToActivePanel('toggle-git')),
+        vscode.commands.registerCommand('pdfDisplay.toggleDiffPanel', () => postToActivePanel('toggle-diff')),
         vscode.commands.registerCommand('pdfDisplay.goToPage', async () => {
             if (!PdfViewerProvider.activePanel) {
                 vscode.window.showInformationMessage('Open a PDF first.');
@@ -137,6 +141,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             try {
                 const bytes = await vscode.workspace.fs.readFile(document.uri); // async, non-blocking
                 const storedViewState = getStoredViewState(this.context, document.uri);
+                const effectiveAnnotations = await getEffectiveAnnotations(this.context, document.uri);
                 console.log('[pdfDisplay] loadAndSend for', document.uri.toString(), 'storedViewState=', storedViewState);
                 webviewPanel.webview.postMessage({
                     type: 'pdf-data',
@@ -147,7 +152,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     // send a definite plain number array instead and rebuild a real
                     // Uint8Array on the webview side - this works the same everywhere.
                     data: Array.from(bytes),
-                    annotations: getStoredAnnotations(this.context, document.uri),
+                    annotations: effectiveAnnotations,
                     viewState: storedViewState,
                     bookmarks: getStoredBookmarks(this.context, document.uri)
                 });
@@ -169,10 +174,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             if (msg?.type === 'ready') {
                 loadAndSend();
             } else if (msg?.type === 'save-annotations') {
-                // Sticky-note annotations, persisted in the extension's own
-                // storage (VS Code globalState) rather than a sidecar file or
-                // the PDF itself, keyed per-document so they survive reloads.
-                storeAnnotations(this.context, document.uri, Array.isArray(msg.annotations) ? msg.annotations : []);
+                // Sticky-note annotations. Persisted in two places: VS Code's own
+                // globalState (fast, always available, works even outside a
+                // workspace) and a sidecar JSON file next to the PDF when it's part
+                // of an open workspace (so git can track/diff/commit them - see
+                // writeAnnotationsSidecar).
+                const list = Array.isArray(msg.annotations) ? msg.annotations : [];
+                storeAnnotations(this.context, document.uri, list);
+                writeAnnotationsSidecar(document.uri, list);
             } else if (msg?.type === 'save-view-state') {
                 // Last-viewed page + zoom, saved (debounced) as the user scrolls/zooms,
                 // so reopening the document resumes where they left off.
@@ -206,6 +215,59 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 exportAnnotatedPdf(this.context, document.uri);
             } else if (msg?.type === 'export-annotations') {
                 exportAnnotationsJson(this.context, document.uri);
+            } else if (msg?.type === 'git-get-status') {
+                getGitFileStatus(document.uri).then(status => {
+                    webviewPanel.webview.postMessage({ type: 'git-status', status });
+                });
+            } else if (msg?.type === 'git-get-log') {
+                getGitFileLog(document.uri).then(log => {
+                    webviewPanel.webview.postMessage({ type: 'git-log', log });
+                });
+            } else if (msg?.type === 'git-commit') {
+                if (typeof msg.message === 'string' && msg.message.trim()) {
+                    commitPdfAndAnnotations(document.uri, msg.message.trim())
+                        .then(() => {
+                            webviewPanel.webview.postMessage({ type: 'git-commit-result', ok: true });
+                            vscode.window.showInformationMessage('pdfDisplay: committed successfully.');
+                        })
+                        .catch((e: any) => {
+                            const message = e?.message ?? String(e);
+                            webviewPanel.webview.postMessage({ type: 'git-commit-result', ok: false, error: message });
+                            vscode.window.showErrorMessage('pdfDisplay: commit failed - ' + message);
+                        });
+                }
+            } else if (msg?.type === 'diff-request-git') {
+                if (typeof msg.ref === 'string') {
+                    getFileAtGitRevision(document.uri, msg.ref)
+                        .then(bytes => {
+                            webviewPanel.webview.postMessage({
+                                type: 'diff-data',
+                                label: 'Commit ' + msg.ref.slice(0, 7),
+                                data: Array.from(bytes)
+                            });
+                        })
+                        .catch((e: any) => {
+                            const message = e?.message ?? String(e);
+                            vscode.window.showErrorMessage('pdfDisplay: could not load that revision - ' + message);
+                            webviewPanel.webview.postMessage({ type: 'diff-error', message });
+                        });
+                }
+            } else if (msg?.type === 'diff-request-file') {
+                vscode.window.showOpenDialog({ filters: { 'PDF': ['pdf'] }, canSelectMany: false }).then(async (uris) => {
+                    if (!uris || uris.length === 0) return;
+                    try {
+                        const bytes = await vscode.workspace.fs.readFile(uris[0]);
+                        webviewPanel.webview.postMessage({
+                            type: 'diff-data',
+                            label: uris[0].path.split('/').pop() || 'other.pdf',
+                            data: Array.from(bytes)
+                        });
+                    } catch (e: any) {
+                        const message = e?.message ?? String(e);
+                        vscode.window.showErrorMessage('pdfDisplay: could not read that file - ' + message);
+                        webviewPanel.webview.postMessage({ type: 'diff-error', message });
+                    }
+                });
             }
         });
 
@@ -968,6 +1030,136 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             color: var(--muted-text-color);
             text-align: center;
         }
+
+        #git-panel, #diff-setup-panel {
+            position: fixed;
+            top: 56px;
+            right: 20px;
+            width: 300px;
+            max-height: 440px;
+            background-color: var(--toolbar-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            padding: 10px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #git-panel.hidden, #diff-setup-panel.hidden {
+            display: none;
+        }
+
+        .git-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        .git-action-btn {
+            background-color: var(--hover-bg);
+            text-align: center;
+        }
+
+        #git-log-list, #diff-setup-log-list {
+            overflow-y: auto;
+            max-height: 220px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .git-log-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: var(--text-color);
+        }
+
+        .git-log-item:hover {
+            background-color: var(--hover-bg);
+        }
+
+        .git-log-item-info {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+
+        /* Full-screen (below the main toolbar) overlay for comparing two PDF
+           versions - deliberately separate from the floating panels above so it
+           can host its own sub-toolbar (mode toggle, page nav) without crowding
+           the main one. */
+        #diff-overlay {
+            position: fixed;
+            top: 48px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--bg-color);
+            z-index: 300;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #diff-overlay.hidden {
+            display: none;
+        }
+
+        #diff-toolbar {
+            height: 44px;
+            flex-shrink: 0;
+            background-color: var(--toolbar-bg);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        #diff-body {
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .diff-side-by-side {
+            display: flex;
+            gap: 16px;
+        }
+
+        .diff-column {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .diff-column-label {
+            font-size: 12px;
+            color: var(--muted-text-color);
+            font-weight: 600;
+        }
+
+        .diff-canvas {
+            max-width: 100%;
+            box-shadow: var(--shadow);
+            border-radius: 2px;
+            background-color: white;
+        }
     </style>
 </head>
 <body>
@@ -984,6 +1176,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <button id="toggle-properties" class="toolbar-btn" title="Document properties" disabled>&#8505;</button>
         <button id="export-annotated-pdf" class="toolbar-btn" title="Download Annotated PDF" disabled>&#128190;</button>
         <button id="export-annotations" class="toolbar-btn" title="Export Annotations as JSON" disabled>&#128228;</button>
+        <button id="toggle-git" class="toolbar-btn text-btn" title="Git: status, history, commit" disabled>Git</button>
+        <button id="toggle-diff" class="toolbar-btn text-btn" title="Compare PDF versions" disabled>Diff</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -1040,6 +1234,45 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="images-close" class="toolbar-btn" title="Close">&times;</button>
         </div>
         <div id="images-list"></div>
+    </div>
+
+    <div id="git-panel" class="hidden">
+        <div class="git-header">
+            <span>Git</span>
+            <button id="git-close" class="toolbar-btn" title="Close">&times;</button>
+        </div>
+        <div id="git-status-line" class="bookmarks-empty">Checking status&hellip;</div>
+        <textarea id="git-commit-message" class="annotation-popup-textarea" placeholder="Commit message&hellip;" style="min-height: 44px;"></textarea>
+        <button id="git-commit-btn" class="toolbar-btn text-btn git-action-btn">Commit PDF &amp; Annotations</button>
+        <div class="git-header" style="margin-top: 4px;">History</div>
+        <div id="git-log-list"></div>
+    </div>
+
+    <div id="diff-setup-panel" class="hidden">
+        <div class="git-header">
+            <span>Compare With</span>
+            <button id="diff-setup-close" class="toolbar-btn" title="Close">&times;</button>
+        </div>
+        <button id="diff-pick-file" class="toolbar-btn text-btn git-action-btn">Choose Another PDF File&hellip;</button>
+        <div class="git-header" style="margin-top: 4px;">Or a previous commit</div>
+        <div id="diff-setup-log-list"></div>
+    </div>
+
+    <div id="diff-overlay" class="hidden">
+        <div id="diff-toolbar">
+            <button id="diff-exit" class="toolbar-btn text-btn">&larr; Exit Diff</button>
+            <span id="diff-label" class="page-sep"></span>
+            <div class="toolbar-spacer"></div>
+            <button id="diff-mode-overlay" class="toolbar-btn text-btn active">Overlay</button>
+            <button id="diff-mode-sidebyside" class="toolbar-btn text-btn">Side by Side</button>
+            <div class="toolbar-group" id="diff-page-nav">
+                <button id="diff-prev-page" class="toolbar-btn" title="Previous page">&#9650;</button>
+                <span id="diff-page-indicator" class="page-sep"></span>
+                <button id="diff-next-page" class="toolbar-btn" title="Next page">&#9660;</button>
+            </div>
+            <span id="diff-stats" class="page-sep"></span>
+        </div>
+        <div id="diff-body"></div>
     </div>
 
     <div id="loading-overlay">
@@ -1110,6 +1343,32 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         const exportAnnotatedPdfBtn = document.getElementById('export-annotated-pdf');
         const exportAnnotationsBtn = document.getElementById('export-annotations');
+
+        const toggleGitBtn = document.getElementById('toggle-git');
+        const gitPanel = document.getElementById('git-panel');
+        const gitStatusLine = document.getElementById('git-status-line');
+        const gitCommitMessageEl = document.getElementById('git-commit-message');
+        const gitCommitBtn = document.getElementById('git-commit-btn');
+        const gitLogListEl = document.getElementById('git-log-list');
+        const gitCloseBtn = document.getElementById('git-close');
+
+        const toggleDiffBtn = document.getElementById('toggle-diff');
+        const diffSetupPanel = document.getElementById('diff-setup-panel');
+        const diffSetupLogListEl = document.getElementById('diff-setup-log-list');
+        const diffPickFileBtn = document.getElementById('diff-pick-file');
+        const diffSetupCloseBtn = document.getElementById('diff-setup-close');
+
+        const contentEl = document.getElementById('content');
+        const diffOverlay = document.getElementById('diff-overlay');
+        const diffExitBtn = document.getElementById('diff-exit');
+        const diffLabelEl = document.getElementById('diff-label');
+        const diffModeOverlayBtn = document.getElementById('diff-mode-overlay');
+        const diffModeSideBySideBtn = document.getElementById('diff-mode-sidebyside');
+        const diffPrevPageBtn = document.getElementById('diff-prev-page');
+        const diffNextPageBtn = document.getElementById('diff-next-page');
+        const diffPageIndicator = document.getElementById('diff-page-indicator');
+        const diffStatsEl = document.getElementById('diff-stats');
+        const diffBodyEl = document.getElementById('diff-body');
 
         const toggleTocBtn = document.getElementById('toggle-toc');
         const tocPanel = document.getElementById('toc-panel');
@@ -1217,6 +1476,16 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let documentMetadata = null;     // { info, metadata } from pdfDoc.getMetadata(), fetched once
         let viewStateSaveTimer = null;
 
+        // ---- Git + Diff state ---------------------------------------------------
+        let gitLogCache = null;     // cached commit history for this file, refreshed on panel open/after commit
+        let otherPdfDoc = null;     // second PDFDocumentProxy loaded when comparing against another version
+        let otherPdfLabel = '';
+        let diffMode = 'overlay';   // 'overlay' | 'sidebyside'
+        let diffPage = 1;
+        let diffTotalPages = 1;
+        const DIFF_SCALE = 1.3;     // fixed scale for diff rendering, independent of the main viewer's zoom - keeps comparisons consistent and the pixel-diff loop bounded
+
+
         function updateZoomLabel() {
             zoomLevelEl.textContent = Math.round((currentScale / BASE_SCALE) * 100) + '%';
         }
@@ -1276,7 +1545,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -1782,6 +2051,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closeBookmarksPanel();
             closePropertiesPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
+            if (typeof closeGitPanel === 'function') closeGitPanel();
+            if (typeof closeDiffSetupPanel === 'function') closeDiffSetupPanel();
 
             const originalIcon = copyImagesBtn.innerHTML;
             copyImagesBtn.innerHTML = '&#8987;'; // hourglass while extracting
@@ -1909,6 +2180,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closePropertiesPanel();
             closeBookmarksPanel();
             closeImagesPanel();
+            closeGitPanel();
+            closeDiffSetupPanel();
             tocPanel.classList.remove('hidden');
             // Always re-render so switching between documents or re-opening
             // after "No outline" doesn't show stale content.
@@ -2122,6 +2395,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closePropertiesPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
             closeImagesPanel();
+            closeGitPanel();
+            closeDiffSetupPanel();
             searchBar.classList.remove('hidden');
             searchInput.focus();
             searchInput.select();
@@ -2511,6 +2786,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closePropertiesPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
             closeImagesPanel();
+            closeGitPanel();
+            closeDiffSetupPanel();
             bookmarksPanel.classList.remove('hidden');
             renderBookmarksList();
         }
@@ -2614,6 +2891,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             closeBookmarksPanel();
             if (typeof closeTocPanel === 'function') closeTocPanel();
             closeImagesPanel();
+            closeGitPanel();
+            closeDiffSetupPanel();
             propertiesPanel.classList.remove('hidden');
             renderPropertiesList();
         }
@@ -2643,6 +2922,330 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         exportAnnotationsBtn.addEventListener('click', () => {
             vscodeApi.postMessage({ type: 'export-annotations' });
         });
+
+        // ---- Git: status, history, commit ---------------------------------------
+        // All the actual git work happens in the extension host (see the
+        // git-get-status / git-get-log / git-commit handlers in extension.ts) -
+        // this panel just requests data and renders whatever comes back.
+
+        function renderGitStatus(status) {
+            if (!status || !status.isRepo) {
+                gitStatusLine.textContent = 'Not inside a Git repository.';
+                return;
+            }
+            const labelMap = {
+                clean: 'Clean',
+                modified: 'Modified (uncommitted changes)',
+                untracked: 'Untracked',
+                staged: 'Staged',
+                unknown: 'Unknown'
+            };
+            const branchPart = status.branch ? (' on ' + status.branch) : '';
+            gitStatusLine.textContent = (labelMap[status.status] || 'Unknown') + branchPart;
+        }
+
+        function renderGitLogList(entries, listEl) {
+            listEl.innerHTML = '';
+            if (!entries || entries.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'bookmarks-empty';
+                empty.textContent = 'No commit history for this file';
+                listEl.appendChild(empty);
+                return;
+            }
+
+            entries.forEach(entry => {
+                const item = document.createElement('div');
+                item.className = 'git-log-item';
+
+                const info = document.createElement('div');
+                info.className = 'git-log-item-info';
+                info.textContent = entry.shortHash + '  ' + entry.message;
+                info.title = entry.message + '\n' + entry.author + ' - ' + entry.date;
+                item.appendChild(info);
+
+                const compareBtn = document.createElement('button');
+                compareBtn.className = 'toolbar-btn text-btn';
+                compareBtn.textContent = 'Compare';
+                compareBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    startDiffAgainstGit(entry.hash);
+                });
+                item.appendChild(compareBtn);
+
+                listEl.appendChild(item);
+            });
+        }
+
+        function refreshGitStatus() {
+            gitStatusLine.textContent = 'Checking status...';
+            vscodeApi.postMessage({ type: 'git-get-status' });
+        }
+
+        function refreshGitLog() {
+            gitLogListEl.innerHTML = '<div class="bookmarks-empty">Loading...</div>';
+            vscodeApi.postMessage({ type: 'git-get-log' });
+        }
+
+        function openGitPanel() {
+            closeSearch();
+            closeBookmarksPanel();
+            closePropertiesPanel();
+            if (typeof closeTocPanel === 'function') closeTocPanel();
+            closeImagesPanel();
+            closeDiffSetupPanel();
+            gitPanel.classList.remove('hidden');
+            refreshGitStatus();
+            refreshGitLog();
+        }
+
+        function closeGitPanel() {
+            gitPanel.classList.add('hidden');
+        }
+
+        toggleGitBtn.addEventListener('click', () => {
+            if (gitPanel.classList.contains('hidden')) {
+                openGitPanel();
+            } else {
+                closeGitPanel();
+            }
+        });
+        gitCloseBtn.addEventListener('click', closeGitPanel);
+
+        gitCommitBtn.addEventListener('click', () => {
+            const message = gitCommitMessageEl.value.trim();
+            if (!message) {
+                gitCommitMessageEl.focus();
+                return;
+            }
+            gitCommitBtn.disabled = true;
+            gitCommitBtn.textContent = 'Committing...';
+            vscodeApi.postMessage({ type: 'git-commit', message });
+        });
+
+        // ---- PDF Diff: compare with a previous commit or another file -----------
+
+        function openDiffSetupPanel() {
+            closeSearch();
+            closeBookmarksPanel();
+            closePropertiesPanel();
+            if (typeof closeTocPanel === 'function') closeTocPanel();
+            closeImagesPanel();
+            closeGitPanel();
+            diffSetupPanel.classList.remove('hidden');
+            if (gitLogCache) {
+                renderGitLogList(gitLogCache, diffSetupLogListEl);
+            } else {
+                diffSetupLogListEl.innerHTML = '<div class="bookmarks-empty">Loading...</div>';
+                vscodeApi.postMessage({ type: 'git-get-log' });
+            }
+        }
+
+        function closeDiffSetupPanel() {
+            diffSetupPanel.classList.add('hidden');
+        }
+
+        toggleDiffBtn.addEventListener('click', () => {
+            if (diffSetupPanel.classList.contains('hidden')) {
+                openDiffSetupPanel();
+            } else {
+                closeDiffSetupPanel();
+            }
+        });
+        diffSetupCloseBtn.addEventListener('click', closeDiffSetupPanel);
+
+        diffPickFileBtn.addEventListener('click', () => {
+            closeDiffSetupPanel();
+            vscodeApi.postMessage({ type: 'diff-request-file' });
+        });
+
+        function startDiffAgainstGit(hash) {
+            closeDiffSetupPanel();
+            closeGitPanel();
+            vscodeApi.postMessage({ type: 'diff-request-git', ref: hash });
+        }
+
+        // Loads the "other" PDF version (bytes arrive via the diff-data message,
+        // fetched by the extension host from either git or a file picker - see
+        // window.addEventListener('message', ...) below) and switches into diff mode.
+        async function loadDiffOther(label, data) {
+            try {
+                const typedBytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+                const loadingTask = pdfjsLib.getDocument({ data: typedBytes });
+                if (otherPdfDoc && otherPdfDoc.destroy) {
+                    try { otherPdfDoc.destroy(); } catch (e) { /* ignore */ }
+                }
+                otherPdfDoc = await loadingTask.promise;
+                otherPdfLabel = label;
+                diffTotalPages = Math.min(totalPages, otherPdfDoc.numPages);
+                diffPage = Math.min(currentPage, diffTotalPages) || 1;
+                enterDiffMode();
+            } catch (e) {
+                debugLog('loadDiffOther failed', (e && e.message) || String(e));
+                window.alert('Could not load that PDF for comparison.');
+            }
+        }
+
+        function enterDiffMode() {
+            contentEl.style.display = 'none';
+            diffOverlay.classList.remove('hidden');
+            diffLabelEl.textContent = 'Comparing with: ' + otherPdfLabel;
+            renderDiffPage();
+        }
+
+        function exitDiffMode() {
+            diffOverlay.classList.add('hidden');
+            contentEl.style.display = 'flex';
+            if (otherPdfDoc && otherPdfDoc.destroy) {
+                try { otherPdfDoc.destroy(); } catch (e) { /* ignore */ }
+            }
+            otherPdfDoc = null;
+        }
+
+        diffExitBtn.addEventListener('click', exitDiffMode);
+
+        diffModeOverlayBtn.addEventListener('click', () => {
+            diffMode = 'overlay';
+            diffModeOverlayBtn.classList.add('active');
+            diffModeSideBySideBtn.classList.remove('active');
+            renderDiffPage();
+        });
+        diffModeSideBySideBtn.addEventListener('click', () => {
+            diffMode = 'sidebyside';
+            diffModeSideBySideBtn.classList.add('active');
+            diffModeOverlayBtn.classList.remove('active');
+            renderDiffPage();
+        });
+
+        diffPrevPageBtn.addEventListener('click', () => {
+            if (diffPage > 1) { diffPage--; renderDiffPage(); }
+        });
+        diffNextPageBtn.addEventListener('click', () => {
+            if (diffPage < diffTotalPages) { diffPage++; renderDiffPage(); }
+        });
+
+        // Renders one page from a given document to an offscreen canvas at a fixed
+        // scale. Intentionally NOT using the shared getViewport() helper (which
+        // applies the main viewer's currentRotation) - diff rendering always uses
+        // a fixed, unrotated scale so the two versions being compared line up
+        // consistently regardless of whatever the user's current view state is.
+        async function renderPageToCanvas(doc, pageNum, scale) {
+            const page = await doc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: scale });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext('2d');
+            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+            return canvas;
+        }
+
+        // Produces a heatmap canvas: a dimmed copy of canvasA as background, with
+        // red overlaid wherever the two canvases differ beyond a per-channel
+        // threshold, and blue for any region that only exists in one of the two
+        // (i.e. one page is physically larger than the other).
+        function computePixelDiff(canvasA, canvasB) {
+            const w = Math.max(canvasA.width, canvasB.width);
+            const h = Math.max(canvasA.height, canvasB.height);
+            const diffCanvas = document.createElement('canvas');
+            diffCanvas.width = w;
+            diffCanvas.height = h;
+            const diffCtx = diffCanvas.getContext('2d');
+
+            diffCtx.fillStyle = '#000';
+            diffCtx.fillRect(0, 0, w, h);
+            diffCtx.globalAlpha = 0.35;
+            diffCtx.drawImage(canvasA, 0, 0);
+            diffCtx.globalAlpha = 1;
+
+            const dataA = canvasA.getContext('2d').getImageData(0, 0, canvasA.width, canvasA.height).data;
+            const dataB = canvasB.getContext('2d').getImageData(0, 0, canvasB.width, canvasB.height).data;
+
+            const outImageData = diffCtx.getImageData(0, 0, w, h);
+            const out = outImageData.data;
+
+            const THRESHOLD = 24;
+            let changedPixelCount = 0;
+
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const outIdx = (y * w + x) * 4;
+                    const inA = x < canvasA.width && y < canvasA.height;
+                    const inB = x < canvasB.width && y < canvasB.height;
+
+                    if (!inA || !inB) {
+                        out[outIdx] = 60; out[outIdx + 1] = 140; out[outIdx + 2] = 255; out[outIdx + 3] = 220;
+                        changedPixelCount++;
+                        continue;
+                    }
+
+                    const idxA = (y * canvasA.width + x) * 4;
+                    const idxB = (y * canvasB.width + x) * 4;
+                    const dr = Math.abs(dataA[idxA] - dataB[idxB]);
+                    const dg = Math.abs(dataA[idxA + 1] - dataB[idxB + 1]);
+                    const db = Math.abs(dataA[idxA + 2] - dataB[idxB + 2]);
+
+                    if (dr > THRESHOLD || dg > THRESHOLD || db > THRESHOLD) {
+                        out[outIdx] = 255; out[outIdx + 1] = 40; out[outIdx + 2] = 40; out[outIdx + 3] = 220;
+                        changedPixelCount++;
+                    }
+                }
+            }
+
+            diffCtx.putImageData(outImageData, 0, 0);
+            return { canvas: diffCanvas, changedPixelCount: changedPixelCount, totalPixelCount: w * h };
+        }
+
+        async function renderDiffPage() {
+            diffPageIndicator.textContent = diffPage + ' / ' + diffTotalPages;
+            diffPrevPageBtn.disabled = diffPage <= 1;
+            diffNextPageBtn.disabled = diffPage >= diffTotalPages;
+            diffBodyEl.innerHTML = '<div class="bookmarks-empty">Rendering...</div>';
+            diffStatsEl.textContent = '';
+
+            if (!pdfDoc || !otherPdfDoc) return;
+
+            let canvasA, canvasB;
+            try {
+                canvasA = await renderPageToCanvas(pdfDoc, diffPage, DIFF_SCALE);
+                canvasB = await renderPageToCanvas(otherPdfDoc, diffPage, DIFF_SCALE);
+            } catch (e) {
+                debugLog('renderDiffPage failed', (e && e.message) || String(e));
+                diffBodyEl.innerHTML = '<div class="bookmarks-empty">Could not render this page for comparison.</div>';
+                return;
+            }
+
+            diffBodyEl.innerHTML = '';
+
+            if (diffMode === 'sidebyside') {
+                const row = document.createElement('div');
+                row.className = 'diff-side-by-side';
+                [['Current', canvasA], [otherPdfLabel || 'Other', canvasB]].forEach(pair => {
+                    const label = pair[0];
+                    const canvas = pair[1];
+                    const col = document.createElement('div');
+                    col.className = 'diff-column';
+                    const heading = document.createElement('div');
+                    heading.className = 'diff-column-label';
+                    heading.textContent = label;
+                    col.appendChild(heading);
+                    canvas.classList.add('diff-canvas');
+                    col.appendChild(canvas);
+                    row.appendChild(col);
+                });
+                diffBodyEl.appendChild(row);
+            } else {
+                const result = computePixelDiff(canvasA, canvasB);
+                result.canvas.classList.add('diff-canvas');
+                const wrap = document.createElement('div');
+                wrap.className = 'diff-column';
+                wrap.appendChild(result.canvas);
+                diffBodyEl.appendChild(wrap);
+
+                const pct = result.totalPixelCount > 0 ? ((result.changedPixelCount / result.totalPixelCount) * 100) : 0;
+                diffStatsEl.textContent = pct.toFixed(1) + '% of this page changed';
+            }
+        }
 
         async function renderPdf(bytes) {
             try {
@@ -2758,6 +3361,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'copy-page-images': copyImagesBtn.click(); break;
                 case 'rotate-view': rotateViewBtn.click(); break;
                 case 'toggle-properties': togglePropertiesBtn.click(); break;
+                case 'toggle-git': toggleGitBtn.click(); break;
+                case 'toggle-diff': toggleDiffBtn.click(); break;
             }
         }
 
@@ -2775,6 +3380,29 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 showError(msg.message);
             } else if (msg.type === 'command') {
                 handleExternalCommand(msg.action, msg.payload);
+            } else if (msg.type === 'git-status') {
+                renderGitStatus(msg.status);
+            } else if (msg.type === 'git-log') {
+                gitLogCache = Array.isArray(msg.log) ? msg.log : [];
+                renderGitLogList(gitLogCache, gitLogListEl);
+                // Also refresh the diff-setup panel's copy if it's currently open
+                // and was waiting on this same fetch.
+                if (!diffSetupPanel.classList.contains('hidden')) {
+                    renderGitLogList(gitLogCache, diffSetupLogListEl);
+                }
+            } else if (msg.type === 'git-commit-result') {
+                gitCommitBtn.disabled = false;
+                gitCommitBtn.textContent = 'Commit PDF & Annotations';
+                if (msg.ok) {
+                    gitCommitMessageEl.value = '';
+                    refreshGitStatus();
+                    refreshGitLog();
+                }
+            } else if (msg.type === 'diff-data') {
+                loadDiffOther(msg.label, msg.data);
+            } else if (msg.type === 'diff-error') {
+                debugLog('diff-error from extension host', msg.message);
+                window.alert('Could not load that PDF for comparison: ' + msg.message);
             }
         });
 
@@ -2810,6 +3438,219 @@ function getStoredAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri)
 
 function storeAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri, annotations: unknown[]): Thenable<void> {
     return context.globalState.update(getAnnotationsStorageKey(uri), annotations);
+}
+
+// ---- Annotations sidecar file (git-trackable) ------------------------------
+// globalState (above) is opaque to git - it lives in VS Code's own storage, not
+// the workspace, so annotation history was previously invisible to version
+// control entirely. When a PDF is part of an open workspace, annotations are
+// also written to a plain JSON file next to it, which git can track/diff/commit
+// like any other file. globalState remains the fallback/cache for PDFs opened
+// from outside any workspace, and for backward compatibility with annotations
+// saved before this sidecar mechanism existed.
+
+function getAnnotationsSidecarUri(pdfUri: vscode.Uri): vscode.Uri | undefined {
+    const folder = vscode.workspace.getWorkspaceFolder(pdfUri);
+    if (!folder) return undefined; // not part of an open workspace - don't scatter files next to it
+
+    const dir = vscode.Uri.joinPath(pdfUri, '..');
+    const baseName = pdfUri.path.split('/').pop() || 'document.pdf';
+    const stem = baseName.toLowerCase().endsWith('.pdf') ? baseName.slice(0, -4) : baseName;
+    return vscode.Uri.joinPath(dir, stem + '.annotations.json');
+}
+
+async function readAnnotationsSidecar(pdfUri: vscode.Uri): Promise<unknown[] | undefined> {
+    const sidecarUri = getAnnotationsSidecarUri(pdfUri);
+    if (!sidecarUri) return undefined;
+    try {
+        const bytes = await vscode.workspace.fs.readFile(sidecarUri);
+        const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && Array.isArray(parsed.annotations)) return parsed.annotations;
+        return undefined;
+    } catch (e) {
+        return undefined; // doesn't exist yet, or isn't valid JSON - caller falls back to globalState
+    }
+}
+
+async function writeAnnotationsSidecar(pdfUri: vscode.Uri, annotations: unknown[]): Promise<void> {
+    const sidecarUri = getAnnotationsSidecarUri(pdfUri);
+    if (!sidecarUri) return; // not in a workspace - globalState alone is the source of truth
+    try {
+        await vscode.workspace.fs.writeFile(sidecarUri, Buffer.from(JSON.stringify(annotations, null, 2), 'utf8'));
+    } catch (e) {
+        // best-effort only (e.g. read-only filesystem) - globalState still has the data
+    }
+}
+
+// Prefers the sidecar file (if present and parseable) over globalState, so
+// annotations checked out from a past commit take precedence over whatever
+// happens to be cached locally.
+async function getEffectiveAnnotations(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<unknown[]> {
+    const fromSidecar = await readAnnotationsSidecar(uri);
+    if (fromSidecar) return fromSidecar;
+    return getStoredAnnotations(context, uri);
+}
+
+// ---- Git integration --------------------------------------------------------
+// Shells out to the git CLI directly (respecting VS Code's own git.path setting
+// if configured) rather than depending on the internal, unofficially-typed
+// vscode.git extension API. This also sidesteps a real correctness risk: that
+// API's Repository.show() returns file content as a string, which is not safe
+// for binary data like a PDF - decoding arbitrary binary bytes as text can
+// corrupt them. Fetching historical file content below uses 'buffer' encoding
+// specifically to avoid that.
+
+function getConfiguredGitPath(): string {
+    const config = vscode.workspace.getConfiguration('git');
+    return config.get<string>('path') || 'git';
+}
+
+function runGitText(args: string[], cwd: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        child_process.execFile(
+            getConfiguredGitPath(),
+            args,
+            { cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 50 },
+            (err, stdout, stderr) => {
+                if (err) {
+                    reject(new Error(((stderr as string) || err.message || 'git command failed').toString().trim()));
+                    return;
+                }
+                resolve(stdout.toString());
+            }
+        );
+    });
+}
+
+function runGitBinary(args: string[], cwd: string): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+        child_process.execFile(
+            getConfiguredGitPath(),
+            args,
+            { cwd, encoding: 'buffer', maxBuffer: 1024 * 1024 * 200 },
+            (err, stdout, stderr) => {
+                if (err) {
+                    const stderrText = stderr ? stderr.toString() : '';
+                    reject(new Error(stderrText || err.message || 'git command failed'));
+                    return;
+                }
+                resolve(stdout as unknown as Buffer);
+            }
+        );
+    });
+}
+
+function getGitCwd(uri: vscode.Uri): string {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    return folder ? folder.uri.fsPath : path.dirname(uri.fsPath);
+}
+
+function getRelativeGitPath(uri: vscode.Uri, cwd: string): string {
+    return path.relative(cwd, uri.fsPath).split(path.sep).join('/');
+}
+
+interface GitFileStatus {
+    isRepo: boolean;
+    status: 'clean' | 'modified' | 'untracked' | 'staged' | 'unknown';
+    branch?: string;
+}
+
+async function getGitFileStatus(uri: vscode.Uri): Promise<GitFileStatus> {
+    const cwd = getGitCwd(uri);
+    const rel = getRelativeGitPath(uri, cwd);
+
+    try {
+        await runGitText(['rev-parse', '--is-inside-work-tree'], cwd);
+    } catch (e) {
+        return { isRepo: false, status: 'unknown' };
+    }
+
+    let branch = '';
+    try {
+        branch = (await runGitText(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)).trim();
+    } catch (e) {
+        // detached HEAD or a brand new repo with no commits yet - leave branch blank
+    }
+
+    try {
+        const out = await runGitText(['status', '--porcelain', '--', rel], cwd);
+        const line = out.split('\n').find(l => l.trim().length > 0);
+        if (!line) return { isRepo: true, status: 'clean', branch };
+        const code = line.slice(0, 2);
+        if (code.includes('?')) return { isRepo: true, status: 'untracked', branch };
+        if (code[0] !== ' ') return { isRepo: true, status: 'staged', branch };
+        return { isRepo: true, status: 'modified', branch };
+    } catch (e) {
+        return { isRepo: true, status: 'unknown', branch };
+    }
+}
+
+interface GitLogEntry {
+    hash: string;
+    shortHash: string;
+    author: string;
+    date: string;
+    message: string;
+}
+
+async function getGitFileLog(uri: vscode.Uri, maxEntries: number = 25): Promise<GitLogEntry[]> {
+    const cwd = getGitCwd(uri);
+    const rel = getRelativeGitPath(uri, cwd);
+    // Field separator \x1f and record separator \x1e keep parsing robust even
+    // if a commit message happens to contain a comma, pipe, etc.
+    const format = '%H%x1f%an%x1f%ad%x1f%s%x1e';
+    try {
+        const out = await runGitText(
+            ['log', '--follow', '--max-count=' + String(maxEntries), '--date=short', '--pretty=format:' + format, '--', rel],
+            cwd
+        );
+        return out.split('\x1e')
+            .map(rec => rec.trim())
+            .filter(Boolean)
+            .map(rec => {
+                const parts = rec.split('\x1f');
+                const hash = parts[0] || '';
+                return {
+                    hash,
+                    shortHash: hash.slice(0, 7),
+                    author: parts[1] || '',
+                    date: parts[2] || '',
+                    message: parts[3] || ''
+                };
+            });
+    } catch (e) {
+        return [];
+    }
+}
+
+async function getFileAtGitRevision(uri: vscode.Uri, ref: string): Promise<Uint8Array> {
+    const cwd = getGitCwd(uri);
+    const rel = getRelativeGitPath(uri, cwd);
+    const buf = await runGitBinary(['show', ref + ':' + rel], cwd);
+    return new Uint8Array(buf);
+}
+
+// Stages and commits the PDF plus its annotations sidecar (if one exists),
+// scoped strictly to those two paths via pathspec so any other unrelated
+// staged changes the user might have pending are left untouched.
+async function commitPdfAndAnnotations(uri: vscode.Uri, message: string): Promise<void> {
+    const cwd = getGitCwd(uri);
+    const rel = getRelativeGitPath(uri, cwd);
+    const paths = [rel];
+
+    const sidecarUri = getAnnotationsSidecarUri(uri);
+    if (sidecarUri) {
+        try {
+            await vscode.workspace.fs.stat(sidecarUri);
+            paths.push(getRelativeGitPath(sidecarUri, cwd));
+        } catch (e) {
+            // no sidecar yet (no annotations saved) - just commit the PDF itself
+        }
+    }
+
+    await runGitText(['add', '--', ...paths], cwd);
+    await runGitText(['commit', '-m', message, '--', ...paths], cwd);
 }
 
 interface PdfViewState {
