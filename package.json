@@ -1,7 +1,7 @@
 {
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
-  "description": "A simple PDF viewer for VS Code",
+  "description": "Fast, fully-featured PDF viewer for VS Code. Sticky notes (with annotated PDF/JSON export), bookmarks, TOC, search, image copy, high-contrast, rotation, properties, Git panel + PDF diffing, and more. Powered by pdf.js + pdf-lib.",
   "version": "0.0.17",
   "publisher": "AnandShah",
   "repository": {

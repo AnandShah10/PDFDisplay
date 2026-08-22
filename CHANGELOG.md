@@ -2,6 +2,10 @@
 
 All notable changes to the "PDFDisplay" extension will be documented in this file.
 
+## [0.0.17]
+- Updated marketplace description in package.json to better reflect the full feature set (annotations with export, Git integration, PDF diffing, etc.).
+- Added Command Palette entries for Git panel and PDF version comparison (implementation forthcoming in webview/handlers).
+
 ## [0.0.16]
 - Added full annotation export support:
   - "Export Annotated PDF" command bakes sticky notes (as visible pins + text callouts) into a new PDF using pdf-lib.
