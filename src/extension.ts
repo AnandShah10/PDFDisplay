@@ -1066,6 +1066,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             text-align: center;
         }
 
+        .git-commit-textarea {
+            min-height: 44px;
+        }
+
+        .git-header-spaced {
+            margin-top: 4px;
+        }
+
         #git-log-list, #diff-setup-log-list {
             overflow-y: auto;
             max-height: 220px;
@@ -1242,9 +1250,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="git-close" class="toolbar-btn" title="Close">&times;</button>
         </div>
         <div id="git-status-line" class="bookmarks-empty">Checking status&hellip;</div>
-        <textarea id="git-commit-message" class="annotation-popup-textarea" placeholder="Commit message&hellip;" style="min-height: 44px;"></textarea>
+        <textarea id="git-commit-message" class="annotation-popup-textarea git-commit-textarea" placeholder="Commit message&hellip;"></textarea>
         <button id="git-commit-btn" class="toolbar-btn text-btn git-action-btn">Commit PDF &amp; Annotations</button>
-        <div class="git-header" style="margin-top: 4px;">History</div>
+        <div class="git-header git-header-spaced">History</div>
         <div id="git-log-list"></div>
     </div>
 
@@ -1254,7 +1262,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="diff-setup-close" class="toolbar-btn" title="Close">&times;</button>
         </div>
         <button id="diff-pick-file" class="toolbar-btn text-btn git-action-btn">Choose Another PDF File&hellip;</button>
-        <div class="git-header" style="margin-top: 4px;">Or a previous commit</div>
+        <div class="git-header git-header-spaced">Or a previous commit</div>
         <div id="diff-setup-log-list"></div>
     </div>
 
@@ -2961,7 +2969,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 const info = document.createElement('div');
                 info.className = 'git-log-item-info';
                 info.textContent = entry.shortHash + '  ' + entry.message;
-                info.title = entry.message + '\n' + entry.author + ' - ' + entry.date;
+                info.title = entry.message + ' (' + entry.author + ', ' + entry.date + ')';
                 item.appendChild(info);
 
                 const compareBtn = document.createElement('button');
