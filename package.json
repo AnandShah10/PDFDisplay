@@ -1,8 +1,8 @@
 {
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
-  "description": "Fast, fully-featured PDF viewer for VS Code. Sticky notes (with annotated PDF/JSON export), bookmarks, TOC, search, image copy, high-contrast, rotation, properties, Git panel + PDF diffing, and more. Powered by pdf.js + pdf-lib.",
-  "version": "0.0.17",
+  "description": "Fast, fully-featured PDF viewer for VS Code",
+  "version": "0.0.19",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -24,91 +24,148 @@
     "commands": [
       {
         "command": "pdfDisplay.openPdf",
-        "title": "PDF Display: View PDF"
+        "title": "PDF Display: View PDF",
+        "icon": "$(file)"
       },
       {
         "command": "pdfDisplay.zoomIn",
-        "title": "PDF Display: Zoom In"
+        "title": "PDF Display: Zoom In",
+        "icon": "$(zoom-in)"
       },
       {
         "command": "pdfDisplay.zoomOut",
-        "title": "PDF Display: Zoom Out"
+        "title": "PDF Display: Zoom Out",
+        "icon": "$(zoom-out)"
       },
       {
         "command": "pdfDisplay.zoomFitWidth",
-        "title": "PDF Display: Fit Width"
+        "title": "PDF Display: Fit Width",
+        "icon": "$(screen-full)"
       },
       {
         "command": "pdfDisplay.nextPage",
-        "title": "PDF Display: Next Page"
+        "title": "PDF Display: Next Page",
+        "icon": "$(chevron-down)"
       },
       {
         "command": "pdfDisplay.prevPage",
-        "title": "PDF Display: Previous Page"
+        "title": "PDF Display: Previous Page",
+        "icon": "$(chevron-up)"
       },
       {
         "command": "pdfDisplay.goToPage",
-        "title": "PDF Display: Go to Page..."
+        "title": "PDF Display: Go to Page...",
+        "icon": "$(symbol-number)"
       },
       {
         "command": "pdfDisplay.find",
-        "title": "PDF Display: Find in Document"
+        "title": "PDF Display: Find in Document",
+        "icon": "$(search)"
       },
       {
         "command": "pdfDisplay.toggleSidebar",
-        "title": "PDF Display: Toggle Thumbnails"
+        "title": "PDF Display: Toggle Thumbnails",
+        "icon": "$(list-tree)"
       },
       {
         "command": "pdfDisplay.toggleAnnotate",
-        "title": "PDF Display: Add Sticky Note"
+        "title": "PDF Display: Add Sticky Note",
+        "icon": "$(note)"
       },
       {
         "command": "pdfDisplay.toggleBookmarks",
-        "title": "PDF Display: Toggle Bookmarks Panel"
+        "title": "PDF Display: Toggle Bookmarks Panel",
+        "icon": "$(bookmark)"
       },
       {
         "command": "pdfDisplay.bookmarkCurrentPage",
-        "title": "PDF Display: Bookmark Current Page"
+        "title": "PDF Display: Bookmark Current Page",
+        "icon": "$(star-empty)"
       },
       {
         "command": "pdfDisplay.toggleToc",
-        "title": "PDF Display: Toggle Table of Contents"
+        "title": "PDF Display: Toggle Table of Contents",
+        "icon": "$(book)"
       },
       {
         "command": "pdfDisplay.toggleHighContrast",
-        "title": "PDF Display: Toggle High Contrast Mode"
+        "title": "PDF Display: Toggle High Contrast Mode",
+        "icon": "$(circle-large-outline)"
       },
       {
         "command": "pdfDisplay.copyPageImage",
-        "title": "PDF Display: Copy Current Page Image"
+        "title": "PDF Display: Copy Current Page Image",
+        "icon": "$(copy)"
       },
       {
         "command": "pdfDisplay.copyPageImages",
-        "title": "PDF Display: Copy Images From Page"
+        "title": "PDF Display: Copy Images From Page",
+        "icon": "$(file-media)"
       },
       {
         "command": "pdfDisplay.rotateView",
-        "title": "PDF Display: Rotate View"
+        "title": "PDF Display: Rotate View",
+        "icon": "$(sync)"
       },
       {
         "command": "pdfDisplay.toggleProperties",
-        "title": "PDF Display: Toggle Document Properties"
+        "title": "PDF Display: Toggle Document Properties",
+        "icon": "$(info)"
       },
       {
         "command": "pdfDisplay.exportAnnotatedPdf",
-        "title": "PDF Display: Download Annotated PDF"
+        "title": "PDF Display: Download Annotated PDF",
+        "icon": "$(save)"
       },
       {
         "command": "pdfDisplay.exportAnnotations",
-        "title": "PDF Display: Export Annotations as JSON"
+        "title": "PDF Display: Export Annotations as JSON",
+        "icon": "$(export)"
       },
       {
         "command": "pdfDisplay.toggleGitPanel",
-        "title": "PDF Display: Toggle Git Panel"
+        "title": "PDF Display: Toggle Git Panel",
+        "icon": "$(source-control)"
       },
       {
         "command": "pdfDisplay.toggleDiffPanel",
-        "title": "PDF Display: Compare PDF Versions"
+        "title": "PDF Display: Compare PDF Versions",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "pdfDisplay.toggleToolsBar",
+        "title": "PDF Display: Toggle Tools Bar",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "pdfDisplay.extractPages",
+        "title": "PDF Display: Extract / Export Selected Pages",
+        "icon": "$(files)"
+      },
+      {
+        "command": "pdfDisplay.compressPdf",
+        "title": "PDF Display: Compress PDF",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "pdfDisplay.mergePdfs",
+        "title": "PDF Display: Merge PDFs...",
+        "icon": "$(arrow-both)"
+      },
+      {
+        "command": "pdfDisplay.splitPdf",
+        "title": "PDF Display: Split PDF by Page Range",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "pdfDisplay.mergeAnnotationsIntoPdf",
+        "title": "PDF Display: Merge Annotations into PDF (Overwrite)",
+        "icon": "$(merge)"
+      },
+      {
+        "command": "pdfDisplay.exportPagesAsImages",
+        "title": "PDF Display: Convert Pages to Images",
+        "icon": "$(device-camera)"
       }
     ],
     "keybindings": [
@@ -156,6 +213,77 @@
         "command": "pdfDisplay.toggleProperties",
         "key": "ctrl+alt+p",
         "mac": "cmd+alt+p",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.toggleToolsBar",
+        "key": "ctrl+alt+q",
+        "mac": "cmd+alt+q",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.copyPageImages",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.exportAnnotatedPdf",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.exportAnnotations",
+        "key": "ctrl+alt+j",
+        "mac": "cmd+alt+j",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.toggleGitPanel",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.toggleDiffPanel",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.extractPages",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.compressPdf",
+        "key": "ctrl+alt+x",
+        "mac": "cmd+alt+x",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.mergePdfs",
+        "key": "ctrl+alt+u",
+        "mac": "cmd+alt+u"
+      },
+      {
+        "command": "pdfDisplay.splitPdf",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.mergeAnnotationsIntoPdf",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.exportPagesAsImages",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       }
     ],

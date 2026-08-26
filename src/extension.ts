@@ -98,7 +98,38 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
             await exportAnnotationsJson(context, uri);
-        })
+        }),
+        vscode.commands.registerCommand('pdfDisplay.toggleToolsBar', () => postToActivePanel('toggle-tools')),
+        vscode.commands.registerCommand('pdfDisplay.extractPages', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) {
+                vscode.window.showInformationMessage('Open a PDF first.');
+                return;
+            }
+            await extractPages(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.compressPdf', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) {
+                vscode.window.showInformationMessage('Open a PDF first.');
+                return;
+            }
+            await compressPdf(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.splitPdf', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) {
+                vscode.window.showInformationMessage('Open a PDF first.');
+                return;
+            }
+            await splitPdf(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.mergeAnnotationsIntoPdf', () => postToActivePanel('merge-annotations')),
+        vscode.commands.registerCommand('pdfDisplay.exportPagesAsImages', () => postToActivePanel('export-images')),
+        // Merge PDFs doesn't need any specific document open - it's a standalone
+        // multi-file-picker operation, so it's registered directly rather than
+        // routed through postToActivePanel (which requires an active PDF panel).
+        vscode.commands.registerCommand('pdfDisplay.mergePdfs', () => mergePdfs())
     );
 }
 
@@ -215,6 +246,48 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 exportAnnotatedPdf(this.context, document.uri);
             } else if (msg?.type === 'export-annotations') {
                 exportAnnotationsJson(this.context, document.uri);
+            } else if (msg?.type === 'extract-pages') {
+                extractPages(document.uri);
+            } else if (msg?.type === 'compress-pdf') {
+                compressPdf(document.uri);
+            } else if (msg?.type === 'merge-pdfs') {
+                mergePdfs();
+            } else if (msg?.type === 'split-pdf') {
+                splitPdf(document.uri);
+            } else if (msg?.type === 'merge-annotations-in-place') {
+                mergeAnnotationsIntoPdf(this.context, document.uri).then(success => {
+                    // The file on disk just changed under this same webview -
+                    // re-fetch and re-render so it reflects the merged content.
+                    if (success) loadAndSend();
+                });
+            } else if (msg?.type === 'request-export-images-setup') {
+                const totalPagesFromWebview = typeof msg.totalPages === 'number' ? msg.totalPages : 0;
+                if (totalPagesFromWebview > 0) {
+                    promptExportImagesSetup(document.uri, totalPagesFromWebview).then(config => {
+                        if (!config) return;
+                        webviewPanel.webview.postMessage({
+                            type: 'export-images-config',
+                            pages: config.pages,
+                            destFolder: config.destFolder,
+                            stem: config.stem
+                        });
+                    });
+                }
+            } else if (msg?.type === 'export-image-data') {
+                if (Array.isArray(msg.data) && typeof msg.destFolder === 'string' && typeof msg.pageNum === 'number') {
+                    const fileName = (msg.stem || 'page') + '-page-' + msg.pageNum + '.png';
+                    const outUri = vscode.Uri.file(path.join(msg.destFolder, fileName));
+                    vscode.workspace.fs.writeFile(outUri, Buffer.from(msg.data)).then(
+                        () => {
+                            if (msg.isLast) {
+                                vscode.window.showInformationMessage('pdfDisplay: exported page images to ' + msg.destFolder);
+                            }
+                        },
+                        (e: any) => {
+                            vscode.window.showErrorMessage('pdfDisplay: failed to write ' + fileName + ' - ' + (e?.message ?? String(e)));
+                        }
+                    );
+                }
             } else if (msg?.type === 'git-get-status') {
                 getGitFileStatus(document.uri).then(status => {
                     webviewPanel.webview.postMessage({ type: 'git-status', status });
@@ -899,6 +972,65 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             width: 0%;
         }
 
+        /* Secondary, collapsible bar holding everything that isn't core
+           navigation/zoom/search - keeps the main toolbar from turning into an
+           unreadable wall of icons as more tools get added. */
+        #tools-bar {
+            position: fixed;
+            top: 48px;
+            left: 0;
+            right: 0;
+            height: 44px;
+            background-color: var(--toolbar-bg);
+            border-bottom: 1px solid var(--border-color);
+            z-index: 99;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 0 16px;
+            overflow-x: auto;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        #tools-bar.hidden {
+            display: none;
+        }
+
+        .tools-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .tools-separator {
+            width: 1px;
+            align-self: stretch;
+            margin: 8px 6px;
+            background-color: var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .tools-labeled-btn {
+            white-space: nowrap;
+        }
+
+        /* When the tools bar is open, everything below the toolbar needs to
+           shift down by its height (44px) so it doesn't sit underneath it. */
+        body.tools-bar-open #content {
+            margin-top: 92px;
+            height: calc(100vh - 92px);
+        }
+        body.tools-bar-open #reading-progress {
+            top: 92px;
+        }
+        body.tools-bar-open #loading-overlay {
+            top: 92px;
+        }
+        body.tools-bar-open #diff-overlay {
+            top: 92px;
+        }
+
         #viewer-container.high-contrast canvas {
             filter: invert(1) hue-rotate(180deg);
         }
@@ -1173,19 +1305,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 <body>
     <div id="toolbar">
         <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
-        <button id="toggle-toc" class="toolbar-btn" title="Table of Contents" disabled>&#128214;</button>
         <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
-        <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
-        <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
-        <button id="toggle-contrast" class="toolbar-btn" title="Toggle High Contrast" disabled>&#9680;</button>
-        <button id="copy-page" class="toolbar-btn" title="Copy Current Page" disabled>&#128203;</button>
-        <button id="copy-images" class="toolbar-btn" title="Copy Images From Page" disabled>&#128247;</button>
-        <button id="rotate-view" class="toolbar-btn" title="Rotate view" disabled>&#8635;</button>
-        <button id="toggle-properties" class="toolbar-btn" title="Document properties" disabled>&#8505;</button>
-        <button id="export-annotated-pdf" class="toolbar-btn" title="Download Annotated PDF" disabled>&#128190;</button>
-        <button id="export-annotations" class="toolbar-btn" title="Export Annotations as JSON" disabled>&#128228;</button>
-        <button id="toggle-git" class="toolbar-btn text-btn" title="Git: status, history, commit" disabled>Git</button>
-        <button id="toggle-diff" class="toolbar-btn text-btn" title="Compare PDF versions" disabled>Diff</button>
+        <button id="toggle-tools" class="toolbar-btn" title="Tools" disabled>&#9881;</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -1199,6 +1320,41 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <span id="zoom-level">100%</span>
             <button id="zoom-in" class="toolbar-btn" title="Zoom in" disabled>&plus;</button>
             <button id="zoom-fit-width" class="toolbar-btn text-btn" title="Fit width" disabled>Fit Width</button>
+        </div>
+    </div>
+
+    <div id="tools-bar" class="hidden">
+        <div class="tools-group">
+            <button id="toggle-toc" class="toolbar-btn" title="Table of Contents" disabled>&#128214;</button>
+            <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
+            <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
+            <button id="toggle-contrast" class="toolbar-btn" title="Toggle High Contrast" disabled>&#9680;</button>
+            <button id="rotate-view" class="toolbar-btn" title="Rotate view" disabled>&#8635;</button>
+            <button id="toggle-properties" class="toolbar-btn" title="Document properties" disabled>&#8505;</button>
+        </div>
+        <div class="tools-separator"></div>
+        <div class="tools-group">
+            <button id="copy-page" class="toolbar-btn" title="Copy Current Page" disabled>&#128203;</button>
+            <button id="copy-images" class="toolbar-btn" title="Copy Images From Page" disabled>&#128247;</button>
+            <button id="export-images" class="toolbar-btn text-btn tools-labeled-btn" title="Convert pages to image files" disabled>Images</button>
+        </div>
+        <div class="tools-separator"></div>
+        <div class="tools-group">
+            <button id="extract-pages-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Export selected pages as a new PDF" disabled>Extract</button>
+            <button id="merge-pdfs-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Merge multiple PDFs into one">Merge PDFs</button>
+            <button id="split-pdf-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Split into multiple PDFs by page range" disabled>Split</button>
+            <button id="compress-pdf-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Reduce PDF file size" disabled>Compress</button>
+        </div>
+        <div class="tools-separator"></div>
+        <div class="tools-group">
+            <button id="export-annotated-pdf" class="toolbar-btn" title="Download Annotated PDF" disabled>&#128190;</button>
+            <button id="merge-annotations-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Bake sticky notes into this PDF (overwrites the file)" disabled>Merge Notes</button>
+            <button id="export-annotations" class="toolbar-btn" title="Export Annotations as JSON" disabled>&#128228;</button>
+        </div>
+        <div class="tools-separator"></div>
+        <div class="tools-group">
+            <button id="toggle-git" class="toolbar-btn text-btn tools-labeled-btn" title="Git: status, history, commit" disabled>Git</button>
+            <button id="toggle-diff" class="toolbar-btn text-btn tools-labeled-btn" title="Compare PDF versions" disabled>Diff</button>
         </div>
     </div>
 
@@ -1325,6 +1481,16 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         const toggleSidebarBtn = document.getElementById('toggle-sidebar');
         const thumbnailSidebar = document.getElementById('thumbnail-sidebar');
+
+        const toggleToolsBtn = document.getElementById('toggle-tools');
+        const toolsBar = document.getElementById('tools-bar');
+
+        const extractPagesBtn = document.getElementById('extract-pages-btn');
+        const mergePdfsBtn = document.getElementById('merge-pdfs-btn');
+        const splitPdfBtn = document.getElementById('split-pdf-btn');
+        const compressPdfBtn = document.getElementById('compress-pdf-btn');
+        const mergeAnnotationsBtn = document.getElementById('merge-annotations-btn');
+        const exportImagesBtn = document.getElementById('export-images');
 
         const toggleSearchBtn = document.getElementById('toggle-search');
         const searchBar = document.getElementById('search-bar');
@@ -1553,11 +1719,16 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, mergeAnnotationsBtn, exportImagesBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
             thumbnailSidebar.classList.toggle('collapsed');
+        });
+
+        toggleToolsBtn.addEventListener('click', () => {
+            const nowOpen = toolsBar.classList.toggle('hidden') === false;
+            document.body.classList.toggle('tools-bar-open', nowOpen);
         });
 
         // Builds the thumbnail strip once per document (independent of zoom level -
@@ -2931,6 +3102,69 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             vscodeApi.postMessage({ type: 'export-annotations' });
         });
 
+        // ---- New PDF operations: extract, compress, merge, split, merge-notes ---
+        // All of these run entirely in the extension host (it has direct access
+        // to the PDF bytes and pdf-lib) - each button just sends a request and any
+        // needed setup (page ranges, save locations) happens via native VS Code
+        // dialogs on that side.
+
+        extractPagesBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'extract-pages' });
+        });
+
+        compressPdfBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'compress-pdf' });
+        });
+
+        mergePdfsBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'merge-pdfs' });
+        });
+
+        splitPdfBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'split-pdf' });
+        });
+
+        mergeAnnotationsBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'merge-annotations-in-place' });
+        });
+
+        // ---- Convert pages to image files ---------------------------------------
+        // The extension host prompts for which pages + a destination folder (see
+        // 'request-export-images-setup' / 'export-images-config'), then this side
+        // renders each requested page to a canvas (reusing renderPageToCanvas,
+        // already built for PDF diffing), converts it to a PNG, and sends the
+        // bytes back for the extension host to write to disk. Pages are processed
+        // one at a time (not all rendered concurrently) to keep memory bounded on
+        // large page ranges.
+
+        exportImagesBtn.addEventListener('click', () => {
+            if (!pdfDoc) return;
+            vscodeApi.postMessage({ type: 'request-export-images-setup', totalPages: totalPages });
+        });
+
+        async function runImageExportQueue(pages, destFolder, stem) {
+            for (let i = 0; i < pages.length; i++) {
+                const pageNum = pages[i];
+                try {
+                    const canvas = await renderPageToCanvas(pdfDoc, pageNum, 2); // 2x scale for decent quality
+                    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                    if (!blob) continue;
+                    const arrayBuffer = await blob.arrayBuffer();
+                    const byteArray = Array.from(new Uint8Array(arrayBuffer));
+                    vscodeApi.postMessage({
+                        type: 'export-image-data',
+                        pageNum: pageNum,
+                        data: byteArray,
+                        destFolder: destFolder,
+                        stem: stem,
+                        isLast: i === pages.length - 1
+                    });
+                } catch (e) {
+                    debugLog('runImageExportQueue failed for page', pageNum, (e && e.message) || String(e));
+                }
+            }
+        }
+
         // ---- Git: status, history, commit ---------------------------------------
         // All the actual git work happens in the extension host (see the
         // git-get-status / git-get-log / git-commit handlers in extension.ts) -
@@ -3371,6 +3605,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'toggle-properties': togglePropertiesBtn.click(); break;
                 case 'toggle-git': toggleGitBtn.click(); break;
                 case 'toggle-diff': toggleDiffBtn.click(); break;
+                case 'toggle-tools': toggleToolsBtn.click(); break;
+                case 'extract-pages': extractPagesBtn.click(); break;
+                case 'compress-pdf': compressPdfBtn.click(); break;
+                case 'merge-pdfs': mergePdfsBtn.click(); break;
+                case 'split-pdf': splitPdfBtn.click(); break;
+                case 'merge-annotations': mergeAnnotationsBtn.click(); break;
+                case 'export-images': exportImagesBtn.click(); break;
             }
         }
 
@@ -3411,6 +3652,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             } else if (msg.type === 'diff-error') {
                 debugLog('diff-error from extension host', msg.message);
                 window.alert('Could not load that PDF for comparison: ' + msg.message);
+            } else if (msg.type === 'export-images-config') {
+                runImageExportQueue(msg.pages, msg.destFolder, msg.stem);
             }
         });
 
@@ -3776,30 +4019,312 @@ function suggestedExportName(uri: vscode.Uri, suffix: string): string {
     return stem + suffix;
 }
 
-// Bakes each sticky note into the page it belongs to as a visible pin + text
-// label, drawn directly onto the page content (not a true interactive PDF
-// /Annots object - pdf-lib's high-level API doesn't support authoring those
-// directly, and hand-building raw annotation dictionaries is considerably
-// more fragile). This is a flattened, portable representation: anyone opening
-// the exported file in any PDF viewer will see the notes, just not be able to
-// edit/dismiss them the way they can in this extension's own sticky notes.
-async function exportAnnotatedPdf(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<void> {
-    const annotations = getStoredAnnotations(context, uri).filter(isStoredAnnotation);
+function formatBytesForMessage(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
 
-    if (annotations.length === 0) {
-        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to bake into this PDF.');
+// Parses a page-range string like "1-3,5,8-10" into a deduplicated, ordered
+// list of 1-based page numbers, silently dropping anything out of bounds or
+// unparseable rather than failing the whole input over one bad segment.
+function parsePageRanges(input: string, maxPage: number): number[] {
+    const result: number[] = [];
+    const seen = new Set<number>();
+    const parts = input.split(',').map(p => p.trim()).filter(Boolean);
+
+    for (const part of parts) {
+        const rangeMatch = /^(\d+)\s*-\s*(\d+)$/.exec(part);
+        if (rangeMatch) {
+            let start = parseInt(rangeMatch[1], 10);
+            let end = parseInt(rangeMatch[2], 10);
+            if (start > end) { const tmp = start; start = end; end = tmp; }
+            for (let p = start; p <= end; p++) {
+                if (p >= 1 && p <= maxPage && !seen.has(p)) { seen.add(p); result.push(p); }
+            }
+        } else if (/^\d+$/.test(part)) {
+            const p = parseInt(part, 10);
+            if (p >= 1 && p <= maxPage && !seen.has(p)) { seen.add(p); result.push(p); }
+        }
+    }
+
+    return result;
+}
+
+// ---- Extract / export selected pages ---------------------------------------
+
+async function extractPages(uri: vscode.Uri): Promise<void> {
+    let srcDoc: PDFDocument;
+    try {
+        const srcBytes = await vscode.workspace.fs.readFile(uri);
+        srcDoc = await PDFDocument.load(srcBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
         return;
     }
 
+    const pageCount = srcDoc.getPageCount();
+    const input = await vscode.window.showInputBox({
+        prompt: `Which pages to extract? (1-${pageCount}), e.g. "1-3,5,8-10"`,
+        validateInput: v => parsePageRanges(v, pageCount).length > 0 ? undefined : 'Enter at least one valid page number or range'
+    });
+    if (!input) return;
+
+    const pageNumbers = parsePageRanges(input, pageCount);
+    if (pageNumbers.length === 0) return;
+
+    const outDoc = await PDFDocument.create();
+    const copiedPages = await outDoc.copyPages(srcDoc, pageNumbers.map(n => n - 1));
+    copiedPages.forEach(p => outDoc.addPage(p));
+
+    let outputBytes: Uint8Array;
+    try {
+        outputBytes = await outDoc.save();
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to build the extracted PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const defaultDir = vscode.Uri.joinPath(uri, '..');
+    const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(defaultDir, suggestedExportName(uri, '-pages.pdf')),
+        filters: { 'PDF': ['pdf'] }
+    });
+    if (!saveUri) return;
+
+    try {
+        await vscode.workspace.fs.writeFile(saveUri, outputBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to save the extracted PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const pageWord = pageNumbers.length === 1 ? 'page' : 'pages';
+    const choice = await vscode.window.showInformationMessage(`Extracted ${pageNumbers.length} ${pageWord}.`, 'Open');
+    if (choice === 'Open') {
+        vscode.commands.executeCommand('vscode.openWith', saveUri, PdfViewerProvider.viewType);
+    }
+}
+
+// ---- PDF compression ---------------------------------------------------------
+
+async function compressPdf(uri: vscode.Uri): Promise<void> {
+    let originalBytes: Uint8Array;
     let pdfDoc: PDFDocument;
     try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        pdfDoc = await PDFDocument.load(bytes);
+        originalBytes = await vscode.workspace.fs.readFile(uri);
+        pdfDoc = await PDFDocument.load(originalBytes);
     } catch (e: any) {
-        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF for export - ' + (e?.message ?? String(e)));
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
         return;
     }
 
+    let outputBytes: Uint8Array;
+    try {
+        // pdf-lib doesn't recompress embedded images or subset fonts - this is a
+        // lightweight, safe optimization (compacting the PDF's internal object
+        // structure via object streams), not full image-recompression-grade
+        // compression. Results vary a lot depending on how the source PDF was
+        // produced; an already-optimized file may see little to no reduction.
+        outputBytes = await pdfDoc.save({ useObjectStreams: true });
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: compression failed - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const beforeSize = originalBytes.byteLength;
+    const afterSize = outputBytes.byteLength;
+
+    if (afterSize >= beforeSize) {
+        vscode.window.showInformationMessage(
+            'pdfDisplay: this file is already compact - no meaningful size reduction was possible (' +
+            formatBytesForMessage(beforeSize) + ' -> ' + formatBytesForMessage(afterSize) + ').'
+        );
+        return;
+    }
+
+    const savedPct = ((beforeSize - afterSize) / beforeSize) * 100;
+    const defaultDir = vscode.Uri.joinPath(uri, '..');
+    const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(defaultDir, suggestedExportName(uri, '-compressed.pdf')),
+        filters: { 'PDF': ['pdf'] }
+    });
+    if (!saveUri) return;
+
+    try {
+        await vscode.workspace.fs.writeFile(saveUri, outputBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to save the compressed PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const choice = await vscode.window.showInformationMessage(
+        'Saved compressed PDF: ' + formatBytesForMessage(beforeSize) + ' -> ' + formatBytesForMessage(afterSize) +
+        ' (' + savedPct.toFixed(0) + '% smaller).',
+        'Open'
+    );
+    if (choice === 'Open') {
+        vscode.commands.executeCommand('vscode.openWith', saveUri, PdfViewerProvider.viewType);
+    }
+}
+
+// ---- Merge multiple PDFs into one -------------------------------------------
+
+async function mergePdfs(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+        canSelectMany: true,
+        filters: { 'PDF': ['pdf'] },
+        openLabel: 'Select PDFs to merge'
+    });
+    if (!uris || uris.length < 2) {
+        if (uris && uris.length === 1) {
+            vscode.window.showInformationMessage('pdfDisplay: select at least 2 PDF files to merge.');
+        }
+        return;
+    }
+
+    // NOTE: the order files come back in from the OS picker isn't guaranteed to
+    // match click order on every platform - if the merged order matters, check
+    // the result and re-run if needed.
+    const outDoc = await PDFDocument.create();
+    for (const srcUri of uris) {
+        try {
+            const bytes = await vscode.workspace.fs.readFile(srcUri);
+            const srcDoc = await PDFDocument.load(bytes);
+            const pages = await outDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+            pages.forEach(p => outDoc.addPage(p));
+        } catch (e: any) {
+            const name = srcUri.path.split('/').pop() || srcUri.fsPath;
+            vscode.window.showErrorMessage('pdfDisplay: could not read "' + name + '" - ' + (e?.message ?? String(e)));
+            return;
+        }
+    }
+
+    let outputBytes: Uint8Array;
+    try {
+        outputBytes = await outDoc.save();
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to build the merged PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const defaultDir = vscode.Uri.joinPath(uris[0], '..');
+    const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(defaultDir, 'merged.pdf'),
+        filters: { 'PDF': ['pdf'] }
+    });
+    if (!saveUri) return;
+
+    try {
+        await vscode.workspace.fs.writeFile(saveUri, outputBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to save the merged PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const choice = await vscode.window.showInformationMessage('Merged ' + uris.length + ' files into one PDF.', 'Open');
+    if (choice === 'Open') {
+        vscode.commands.executeCommand('vscode.openWith', saveUri, PdfViewerProvider.viewType);
+    }
+}
+
+// ---- Split a PDF into multiple files by page range --------------------------
+
+async function splitPdf(uri: vscode.Uri): Promise<void> {
+    let srcDoc: PDFDocument;
+    try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        srcDoc = await PDFDocument.load(bytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const pageCount = srcDoc.getPageCount();
+    const input = await vscode.window.showInputBox({
+        prompt: 'Split into parts by page range (' + pageCount + ' pages total), e.g. "1-3,4-6,7-' + pageCount + '"',
+        validateInput: v => {
+            const parts = v.split(',').map(p => p.trim()).filter(Boolean);
+            if (parts.length === 0) return 'Enter at least one range';
+            for (const part of parts) {
+                if (parsePageRanges(part, pageCount).length === 0) return '"' + part + '" is not a valid range';
+            }
+            return undefined;
+        }
+    });
+    if (!input) return;
+
+    const rangeStrings = input.split(',').map(p => p.trim()).filter(Boolean);
+    const parts = rangeStrings.map(r => parsePageRanges(r, pageCount)).filter(p => p.length > 0);
+    if (parts.length === 0) return;
+
+    const destFolders = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        openLabel: 'Choose output folder'
+    });
+    if (!destFolders || destFolders.length === 0) return;
+    const destFolder = destFolders[0];
+    const stem = suggestedExportName(uri, '').replace(/\.pdf$/i, '') || 'document';
+
+    let written = 0;
+    for (let i = 0; i < parts.length; i++) {
+        try {
+            const outDoc = await PDFDocument.create();
+            const copiedPages = await outDoc.copyPages(srcDoc, parts[i].map(n => n - 1));
+            copiedPages.forEach(p => outDoc.addPage(p));
+            const outputBytes = await outDoc.save();
+            const partUri = vscode.Uri.joinPath(destFolder, stem + '-part' + (i + 1) + '.pdf');
+            await vscode.workspace.fs.writeFile(partUri, outputBytes);
+            written++;
+        } catch (e: any) {
+            vscode.window.showErrorMessage('pdfDisplay: failed to write part ' + (i + 1) + ' - ' + (e?.message ?? String(e)));
+        }
+    }
+
+    const fileWord = written === 1 ? 'file' : 'files';
+    vscode.window.showInformationMessage('Split into ' + written + ' ' + fileWord + ' in ' + destFolder.fsPath + '.');
+}
+
+// ---- Convert pages to image files -------------------------------------------
+// The extension host handles the "which pages / where to save" setup (this
+// function); the actual rasterization has to happen in the webview since only
+// pdf.js there can render a page to a canvas - see the 'export-image-data'
+// message handler in resolveCustomEditor for the write side of that handoff.
+
+async function promptExportImagesSetup(uri: vscode.Uri, totalPages: number): Promise<{ pages: number[]; destFolder: string; stem: string } | undefined> {
+    const input = await vscode.window.showInputBox({
+        prompt: 'Which pages to export as images? (1-' + totalPages + '), e.g. "1-3,5" or "all"',
+        value: 'all',
+        validateInput: v => {
+            if (v.trim().toLowerCase() === 'all') return undefined;
+            return parsePageRanges(v, totalPages).length > 0 ? undefined : 'Enter at least one valid page number or range, or "all"';
+        }
+    });
+    if (!input) return undefined;
+
+    const pages = input.trim().toLowerCase() === 'all'
+        ? Array.from({ length: totalPages }, (_, i) => i + 1)
+        : parsePageRanges(input, totalPages);
+    if (pages.length === 0) return undefined;
+
+    const destFolders = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        openLabel: 'Choose output folder'
+    });
+    if (!destFolders || destFolders.length === 0) return undefined;
+
+    const stem = suggestedExportName(uri, '').replace(/\.pdf$/i, '') || 'document';
+    return { pages, destFolder: destFolders[0].fsPath, stem };
+}
+
+// Draws each sticky note onto its page as a visible pin + wrapped text label.
+// Shared by exportAnnotatedPdf (save as a new file) and mergeAnnotationsIntoPdf
+// (overwrite the original) below, so both stay in sync automatically.
+async function bakeAnnotationsOntoDoc(pdfDoc: PDFDocument, annotations: StoredAnnotation[]): Promise<void> {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const pages = pdfDoc.getPages();
     const FONT_SIZE = 9;
@@ -3855,6 +4380,26 @@ async function exportAnnotatedPdf(context: vscode.ExtensionContext, uri: vscode.
             });
         });
     }
+}
+
+async function exportAnnotatedPdf(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<void> {
+    const annotations = getStoredAnnotations(context, uri).filter(isStoredAnnotation);
+
+    if (annotations.length === 0) {
+        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to bake into this PDF.');
+        return;
+    }
+
+    let pdfDoc: PDFDocument;
+    try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        pdfDoc = await PDFDocument.load(bytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF for export - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    await bakeAnnotationsOntoDoc(pdfDoc, annotations);
 
     let outputBytes: Uint8Array;
     try {
@@ -3886,6 +4431,58 @@ async function exportAnnotatedPdf(context: vscode.ExtensionContext, uri: vscode.
     if (choice === 'Open') {
         vscode.commands.executeCommand('vscode.openWith', saveUri, PdfViewerProvider.viewType);
     }
+}
+
+// In-place variant of exportAnnotatedPdf above: bakes annotations directly into
+// the currently-open file and overwrites it, rather than saving a copy. This is
+// destructive, so it requires an explicit modal confirmation. Returns whether it
+// actually happened, so the caller (the message handler in resolveCustomEditor)
+// knows whether to refresh the webview with the new content.
+async function mergeAnnotationsIntoPdf(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<boolean> {
+    const sidecarAnnotations = await readAnnotationsSidecar(uri);
+    const effective = (sidecarAnnotations ?? getStoredAnnotations(context, uri)).filter(isStoredAnnotation);
+
+    if (effective.length === 0) {
+        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to merge into this PDF.');
+        return false;
+    }
+
+    const noteWord = effective.length === 1 ? 'note' : 'notes';
+    const confirmChoice = await vscode.window.showWarningMessage(
+        `This will permanently draw ${effective.length} ${noteWord} onto the PDF and overwrite the original file. This cannot be undone from within the extension.`,
+        { modal: true },
+        'Merge & Overwrite'
+    );
+    if (confirmChoice !== 'Merge & Overwrite') return false;
+
+    let pdfDoc: PDFDocument;
+    try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        pdfDoc = await PDFDocument.load(bytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
+        return false;
+    }
+
+    await bakeAnnotationsOntoDoc(pdfDoc, effective);
+
+    let outputBytes: Uint8Array;
+    try {
+        outputBytes = await pdfDoc.save();
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to generate the merged PDF - ' + (e?.message ?? String(e)));
+        return false;
+    }
+
+    try {
+        await vscode.workspace.fs.writeFile(uri, outputBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: failed to overwrite the PDF - ' + (e?.message ?? String(e)));
+        return false;
+    }
+
+    vscode.window.showInformationMessage(`Merged ${effective.length} ${noteWord} into the PDF.`);
+    return true;
 }
 
 // Exports just the sticky notes as JSON, independent of the PDF file itself -
