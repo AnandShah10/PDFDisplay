@@ -100,6 +100,9 @@ export function activate(context: vscode.ExtensionContext) {
             await exportAnnotationsJson(context, uri);
         }),
         vscode.commands.registerCommand('pdfDisplay.toggleToolsBar', () => postToActivePanel('toggle-tools')),
+        vscode.commands.registerCommand('pdfDisplay.viewModeContinuous', () => postToActivePanel('view-mode-continuous')),
+        vscode.commands.registerCommand('pdfDisplay.viewModeSingle', () => postToActivePanel('view-mode-single')),
+        vscode.commands.registerCommand('pdfDisplay.viewModeTwo', () => postToActivePanel('view-mode-two')),
         vscode.commands.registerCommand('pdfDisplay.extractPages', async () => {
             const uri = PdfViewerProvider.activeDocumentUri;
             if (!uri) {
@@ -218,7 +221,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 // so reopening the document resumes where they left off.
                 console.log('[pdfDisplay] onDidReceiveMessage save-view-state', msg.page, msg.scale, 'for', document.uri.toString());
                 if (typeof msg.page === 'number' && typeof msg.scale === 'number') {
-                    storeViewState(this.context, document.uri, { page: msg.page, scale: msg.scale, highContrast: msg.highContrast });
+                    storeViewState(this.context, document.uri, { page: msg.page, scale: msg.scale, highContrast: msg.highContrast, viewMode: msg.viewMode });
                 }
             } else if (msg?.type === 'save-bookmarks') {
                 storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
@@ -1015,6 +1018,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             white-space: nowrap;
         }
 
+        .two-page-row {
+            display: flex;
+            flex-direction: row;
+            gap: 16px;
+            align-items: flex-start;
+        }
+
         /* When the tools bar is open, everything below the toolbar needs to
            shift down by its height (44px) so it doesn't sit underneath it. */
         body.tools-bar-open #content {
@@ -1325,6 +1335,12 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
     <div id="tools-bar" class="hidden">
         <div class="tools-group">
+            <button id="view-mode-continuous" class="toolbar-btn text-btn tools-labeled-btn active" title="Continuous scrolling" disabled>Continuous</button>
+            <button id="view-mode-single" class="toolbar-btn text-btn tools-labeled-btn" title="One page at a time" disabled>Single Page</button>
+            <button id="view-mode-two" class="toolbar-btn text-btn tools-labeled-btn" title="Two pages side by side" disabled>Two Page</button>
+        </div>
+        <div class="tools-separator"></div>
+        <div class="tools-group">
             <button id="toggle-toc" class="toolbar-btn" title="Table of Contents" disabled>&#128214;</button>
             <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
             <button id="toggle-bookmarks" class="toolbar-btn" title="Bookmarks" disabled>&#128278;</button>
@@ -1485,6 +1501,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const toggleToolsBtn = document.getElementById('toggle-tools');
         const toolsBar = document.getElementById('tools-bar');
 
+        const viewModeContinuousBtn = document.getElementById('view-mode-continuous');
+        const viewModeSingleBtn = document.getElementById('view-mode-single');
+        const viewModeTwoBtn = document.getElementById('view-mode-two');
+
         const extractPagesBtn = document.getElementById('extract-pages-btn');
         const mergePdfsBtn = document.getElementById('merge-pdfs-btn');
         const splitPdfBtn = document.getElementById('split-pdf-btn');
@@ -1600,6 +1620,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         let currentPage = 1;
         let currentScale = 1.5;     // pdf.js viewport scale; BASE_SCALE below maps this to "100%"
         let currentRotation = 0;    // 0 | 90 | 180 | 270, view-only - never written back to the file
+        let viewMode = 'continuous'; // 'continuous' | 'single' | 'two'
         let currentHighContrast = false;
         const BASE_SCALE = 1.5;
         const MIN_SCALE = 0.375;    // ~25%
@@ -1688,8 +1709,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 return;
             }
             clearTimeout(viewStateSaveTimer);
-            debugLog('sending save-view-state', { page: currentPage, scale: currentScale, highContrast: currentHighContrast });
-            vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale, highContrast: currentHighContrast });
+            debugLog('sending save-view-state', { page: currentPage, scale: currentScale, highContrast: currentHighContrast, viewMode: viewMode });
+            vscodeApi.postMessage({ type: 'save-view-state', page: currentPage, scale: currentScale, highContrast: currentHighContrast, viewMode: viewMode });
         }
 
         document.addEventListener('visibilitychange', () => {
@@ -1719,7 +1740,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, mergeAnnotationsBtn, exportImagesBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -1955,11 +1976,52 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         // Builds (or rebuilds, on zoom change) the placeholder containers for every
         // page at the current scale and wires up lazy-render + current-page tracking.
+        // Pairing convention for two-page (spread) view: (1,2), (3,4), (5,6)...
+        // Simpler than the "lone cover page" convention some readers use (where
+        // page 1 sits alone and pairs start from 2) - worth revisiting if you
+        // specifically need that convention.
+        function getSpreadPages(pageNum) {
+            const first = (pageNum % 2 === 1) ? pageNum : pageNum - 1;
+            const pages = [first];
+            if (first + 1 <= totalPages) pages.push(first + 1);
+            return pages;
+        }
+
         async function layoutPages() {
             if (lazyRenderObserver) lazyRenderObserver.disconnect();
             if (currentPageObserver) currentPageObserver.disconnect();
             container.innerHTML = '';
+            lazyRenderObserver = null;
+            currentPageObserver = null;
 
+            if (viewMode === 'single') {
+                // Only one page exists in the DOM at a time in this mode, so it's
+                // rendered directly - no lazy IntersectionObserver machinery needed.
+                const pageContainer = document.createElement('div');
+                pageContainer.className = 'page-container';
+                pageContainer.dataset.pageNumber = String(currentPage);
+                container.appendChild(pageContainer);
+                await renderPage(pageContainer, window.devicePixelRatio || 1);
+                return;
+            }
+
+            if (viewMode === 'two') {
+                const row = document.createElement('div');
+                row.className = 'two-page-row';
+                container.appendChild(row);
+                const dpr = window.devicePixelRatio || 1;
+                for (const pNum of getSpreadPages(currentPage)) {
+                    const pageContainer = document.createElement('div');
+                    pageContainer.className = 'page-container';
+                    pageContainer.dataset.pageNumber = String(pNum);
+                    row.appendChild(pageContainer);
+                    await renderPage(pageContainer, dpr);
+                }
+                return;
+            }
+
+            // 'continuous' - the original behavior: every page gets a placeholder
+            // up front, lazily rendered as it scrolls into view.
             lazyRenderObserver = setupLazyRendering();
             currentPageObserver = setupCurrentPageTracking();
 
@@ -1979,15 +2041,44 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             }
         }
 
-        function scrollToPage(pageNum) {
+        // The single navigation entry point used everywhere (thumbnails,
+        // bookmarks, TOC, search, prev/next, page input, annotation links) - kept
+        // mode-aware here so none of those call sites need their own special
+        // casing for single/two-page view.
+        async function scrollToPage(pageNum) {
             pageNum = Math.min(totalPages, Math.max(1, pageNum));
-            const target = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
-            if (target) {
-                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                currentPage = pageNum;
-                updatePageControls();
+
+            if (viewMode === 'continuous') {
+                const target = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    currentPage = pageNum;
+                    updatePageControls();
+                }
+                return;
             }
+
+            // single/two-page: "navigating" means switching which page(s) are
+            // displayed, not scrolling within a long stacked document.
+            currentPage = pageNum;
+            await layoutPages();
+            container.scrollTop = 0;
+            updatePageControls();
         }
+
+        function setViewMode(mode) {
+            if (viewMode === mode) return;
+            viewMode = mode;
+            viewModeContinuousBtn.classList.toggle('active', mode === 'continuous');
+            viewModeSingleBtn.classList.toggle('active', mode === 'single');
+            viewModeTwoBtn.classList.toggle('active', mode === 'two');
+            scheduleViewStateSave();
+            layoutPages().then(() => { container.scrollTop = 0; });
+        }
+
+        viewModeContinuousBtn.addEventListener('click', () => setViewMode('continuous'));
+        viewModeSingleBtn.addEventListener('click', () => setViewMode('single'));
+        viewModeTwoBtn.addEventListener('click', () => setViewMode('two'));
 
         async function applyZoom(newScale) {
             currentScale = clampScale(newScale);
@@ -2000,8 +2091,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
         }
 
-        prevPageBtn.addEventListener('click', () => scrollToPage(currentPage - 1));
-        nextPageBtn.addEventListener('click', () => scrollToPage(currentPage + 1));
+        prevPageBtn.addEventListener('click', () => scrollToPage(currentPage - (viewMode === 'two' ? 2 : 1)));
+        nextPageBtn.addEventListener('click', () => scrollToPage(currentPage + (viewMode === 'two' ? 2 : 1)));
         pageInput.addEventListener('change', () => {
             const n = parseInt(pageInput.value, 10);
             if (!isNaN(n)) {
@@ -2480,6 +2571,15 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // bypassing the lazy IntersectionObserver, so a search match on it can be
         // highlighted and scrolled to right away.
         async function ensurePageRendered(pageNum) {
+            if (viewMode !== 'continuous') {
+                // Only the current page (or spread) exists in the DOM at all in
+                // these modes - if the target isn't part of it, switch to it first.
+                const alreadyShown = container.querySelector('.page-container[data-page-number="' + pageNum + '"] canvas');
+                if (!alreadyShown) {
+                    await scrollToPage(pageNum);
+                }
+                return;
+            }
             const pageContainer = container.querySelector('.page-container[data-page-number="' + pageNum + '"]');
             if (!pageContainer || pageContainer.querySelector('canvas')) return;
             if (lazyRenderObserver) lazyRenderObserver.unobserve(pageContainer);
@@ -3509,6 +3609,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 if (pendingViewState && pendingViewState.highContrast) {
                     applyHighContrast(true);
                 }
+                if (pendingViewState && typeof pendingViewState.viewMode === 'string' &&
+                    ['continuous', 'single', 'two'].indexOf(pendingViewState.viewMode) !== -1) {
+                    viewMode = pendingViewState.viewMode;
+                    viewModeContinuousBtn.classList.toggle('active', viewMode === 'continuous');
+                    viewModeSingleBtn.classList.toggle('active', viewMode === 'single');
+                    viewModeTwoBtn.classList.toggle('active', viewMode === 'two');
+                }
                 // Capture the restore target in a local const, independent of the
                 // currentPage variable - layoutPages() below populates placeholders
                 // top-down while the viewport is still scrolled to the top, so the
@@ -3587,8 +3694,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'zoom-in': applyZoom(currentScale + ZOOM_STEP); break;
                 case 'zoom-out': applyZoom(currentScale - ZOOM_STEP); break;
                 case 'fit-width': zoomFitWidthBtn.click(); break;
-                case 'next-page': scrollToPage(currentPage + 1); break;
-                case 'prev-page': scrollToPage(currentPage - 1); break;
+                case 'next-page': scrollToPage(currentPage + (viewMode === 'two' ? 2 : 1)); break;
+                case 'prev-page': scrollToPage(currentPage - (viewMode === 'two' ? 2 : 1)); break;
                 case 'go-to-page':
                     if (typeof payload === 'number' && Number.isFinite(payload)) scrollToPage(payload);
                     break;
@@ -3612,6 +3719,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'split-pdf': splitPdfBtn.click(); break;
                 case 'merge-annotations': mergeAnnotationsBtn.click(); break;
                 case 'export-images': exportImagesBtn.click(); break;
+                case 'view-mode-continuous': setViewMode('continuous'); break;
+                case 'view-mode-single': setViewMode('single'); break;
+                case 'view-mode-two': setViewMode('two'); break;
             }
         }
 
@@ -3908,6 +4018,7 @@ interface PdfViewState {
     page: number;
     scale: number;
     highContrast?: boolean;
+    viewMode?: 'continuous' | 'single' | 'two';
 }
 
 function getViewStateStorageKey(uri: vscode.Uri): string {

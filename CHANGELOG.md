@@ -2,6 +2,30 @@
 
 All notable changes to the "PDFDisplay" extension will be documented in this file.
 
+## [0.0.20]
+- **Major PDF toolkit expansion**:
+  - Extract selected pages (by range or "all") to a new PDF.
+  - Compress PDF using pdf-lib optimizations.
+  - Split PDF into multiple files by page ranges.
+  - Merge multiple PDFs into one document.
+  - "Merge Annotations" command bakes sticky notes directly into the original PDF (in-place overwrite with confirmation).
+  - Export any range of pages as high-quality PNG images (with folder/stem selection).
+- Added multiple **view modes**: Continuous scrolling, Single Page, and Two-Page spread layout.
+- Added collapsible secondary **Tools bar** to organize the growing set of controls without cluttering the main toolbar.
+- **Full Git integration panel**: shows repo status, commit message box (commits both PDF + `.annotations.json` sidecar), and commit history with one-click "Compare" buttons.
+- **Full PDF Diff viewer**: compare against any previous Git commit or another PDF file on disk. Supports overlay mode (with red/blue pixel-difference heatmap + change %) and side-by-side mode, with its own page navigation.
+- Annotations are now also written to a git-trackable `.annotations.json` sidecar file (when the PDF lives inside an open workspace). Sidecar takes precedence on load so annotations from version control are respected.
+- Enhanced annotated-PDF export: sticky notes now render as visible yellow pins + wrapped text callouts (using pdf-lib).
+- View state persistence now includes selected view mode and high-contrast setting.
+- Expanded Command Palette + keybinding coverage for all new features (extract, compress, split, merge, view modes, tools bar, git, diff, export-images, etc.).
+- Numerous stability, rendering, and UX improvements (lazy thumbnail rendering, better restore-after-zoom/rotation, improved search, etc.).
+
+## [0.0.19]
+- Version bump and minor packaging updates.
+
+## [0.0.18]
+- Pdf Viewer Bug fix.
+
 ## [0.0.17]
 - Updated marketplace description in package.json to better reflect the full feature set (annotations with export, Git integration, PDF diffing, etc.).
 - Added Command Palette entries for Git panel and PDF version comparison (implementation forthcoming in webview/handlers).

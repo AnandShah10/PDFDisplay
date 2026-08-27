@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -166,6 +166,21 @@
         "command": "pdfDisplay.exportPagesAsImages",
         "title": "PDF Display: Convert Pages to Images",
         "icon": "$(device-camera)"
+      },
+      {
+        "command": "pdfDisplay.viewModeContinuous",
+        "title": "PDF Display: View Mode - Continuous",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "pdfDisplay.viewModeSingle",
+        "title": "PDF Display: View Mode - Single Page",
+        "icon": "$(file)"
+      },
+      {
+        "command": "pdfDisplay.viewModeTwo",
+        "title": "PDF Display: View Mode - Two Page",
+        "icon": "$(layout-sidebar-right)"
       }
     ],
     "keybindings": [
@@ -284,6 +299,24 @@
         "command": "pdfDisplay.exportPagesAsImages",
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.viewModeContinuous",
+        "key": "ctrl+alt+1",
+        "mac": "cmd+alt+1",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.viewModeSingle",
+        "key": "ctrl+alt+2",
+        "mac": "cmd+alt+2",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.viewModeTwo",
+        "key": "ctrl+alt+3",
+        "mac": "cmd+alt+3",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       }
     ],
