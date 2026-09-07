@@ -2,6 +2,10 @@
 
 All notable changes to the "PDFDisplay" extension will be documented in this file.
 
+## [0.0.21]
+- Updated README.md with complete feature list, expanded shortcuts table (now covering Git, Diff, PDF toolkit, view modes, Tools bar, image export, etc.), and improved documentation.
+- Version bump and minor packaging updates (package.json now at 0.0.21).
+
 ## [0.0.20]
 - **Major PDF toolkit expansion**:
   - Extract selected pages (by range or "all") to a new PDF.

@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -303,20 +303,20 @@
       },
       {
         "command": "pdfDisplay.viewModeContinuous",
-        "key": "ctrl+alt+1",
-        "mac": "cmd+alt+1",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       },
       {
         "command": "pdfDisplay.viewModeSingle",
-        "key": "ctrl+alt+2",
-        "mac": "cmd+alt+2",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       },
       {
         "command": "pdfDisplay.viewModeTwo",
-        "key": "ctrl+alt+3",
-        "mac": "cmd+alt+3",
+        "key": "ctrl+alt+w",
+        "mac": "cmd+alt+w",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       }
     ],

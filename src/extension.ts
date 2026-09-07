@@ -251,6 +251,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 exportAnnotationsJson(this.context, document.uri);
             } else if (msg?.type === 'extract-pages') {
                 extractPages(document.uri);
+            } else if (msg?.type === 'extract-specific-pages') {
+                if (Array.isArray(msg.pages) && msg.pages.length > 0) {
+                    extractSpecificPages(document.uri, msg.pages);
+                }
             } else if (msg?.type === 'compress-pdf') {
                 compressPdf(document.uri);
             } else if (msg?.type === 'merge-pdfs') {
@@ -514,19 +518,40 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             background-color: var(--vscode-sideBar-background, #252526);
             border-right: 1px solid var(--border-color);
             overflow-y: auto;
-            padding: 14px 0;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            gap: 12px;
-            transition: width 0.15s ease, padding 0.15s ease, border 0.15s ease;
+            transition: width 0.15s ease, border 0.15s ease;
         }
 
         #thumbnail-sidebar.collapsed {
             width: 0;
-            padding: 0;
             border-right: none;
             overflow: hidden;
+        }
+
+        #thumb-select-bar {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            flex-shrink: 0;
+            background-color: var(--vscode-sideBar-background, #252526);
+            border-bottom: 1px solid var(--border-color);
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        #export-selected-pages.hidden {
+            display: none;
+        }
+
+        #thumbnail-list {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 0;
         }
 
         .thumb-container {
@@ -546,6 +571,26 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         .thumb-container.active {
             border-color: var(--accent-color);
+        }
+
+        .thumb-container.thumb-selected {
+            border-color: var(--vscode-charts-green, #2ea043);
+            box-shadow: 0 0 0 2px rgba(46, 160, 67, 0.45);
+        }
+
+        .thumb-container.thumb-selected::after {
+            content: '\\2713';
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--vscode-charts-green, #2ea043);
+            color: #ffffff;
+            font-size: 11px;
+            line-height: 16px;
+            text-align: center;
         }
 
         .thumb-placeholder {
@@ -1331,15 +1376,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="zoom-in" class="toolbar-btn" title="Zoom in" disabled>&plus;</button>
             <button id="zoom-fit-width" class="toolbar-btn text-btn" title="Fit width" disabled>Fit Width</button>
         </div>
+        <div class="toolbar-group" id="view-mode-controls">
+            <button id="view-mode-continuous" class="toolbar-btn active" title="Continuous scrolling (Ctrl/Cmd+Alt+L)" disabled>&#8734;</button>
+            <button id="view-mode-single" class="toolbar-btn" title="Single page (Ctrl/Cmd+Alt+N)" disabled>&#9312;</button>
+            <button id="view-mode-two" class="toolbar-btn" title="Two page (Ctrl/Cmd+Alt+W)" disabled>&#9313;</button>
+        </div>
     </div>
 
     <div id="tools-bar" class="hidden">
-        <div class="tools-group">
-            <button id="view-mode-continuous" class="toolbar-btn text-btn tools-labeled-btn active" title="Continuous scrolling" disabled>Continuous</button>
-            <button id="view-mode-single" class="toolbar-btn text-btn tools-labeled-btn" title="One page at a time" disabled>Single Page</button>
-            <button id="view-mode-two" class="toolbar-btn text-btn tools-labeled-btn" title="Two pages side by side" disabled>Two Page</button>
-        </div>
-        <div class="tools-separator"></div>
         <div class="tools-group">
             <button id="toggle-toc" class="toolbar-btn" title="Table of Contents" disabled>&#128214;</button>
             <button id="toggle-annotate" class="toolbar-btn" title="Add a sticky note" disabled>&#128204;</button>
@@ -1461,7 +1505,13 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     </div>
 
     <div id="content">
-        <div id="thumbnail-sidebar"></div>
+        <div id="thumbnail-sidebar">
+            <div id="thumb-select-bar">
+                <button id="toggle-page-select" class="toolbar-btn text-btn tools-labeled-btn" title="Select pages to export as a new PDF" disabled>Select Pages</button>
+                <button id="export-selected-pages" class="toolbar-btn text-btn tools-labeled-btn hidden" title="Export the selected pages" disabled>Export (0)</button>
+            </div>
+            <div id="thumbnail-list"></div>
+        </div>
         <div id="viewer-container"></div>
     </div>
 
@@ -1497,6 +1547,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         const toggleSidebarBtn = document.getElementById('toggle-sidebar');
         const thumbnailSidebar = document.getElementById('thumbnail-sidebar');
+        const thumbnailListEl = document.getElementById('thumbnail-list');
+        const togglePageSelectBtn = document.getElementById('toggle-page-select');
+        const exportSelectedPagesBtn = document.getElementById('export-selected-pages');
 
         const toggleToolsBtn = document.getElementById('toggle-tools');
         const toolsBar = document.getElementById('tools-bar');
@@ -1740,7 +1793,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn, togglePageSelectBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -1757,7 +1810,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // thumbnail as it scrolls into view within the sidebar, same pattern as
         // the main page viewer.
         async function buildThumbnails() {
-            thumbnailSidebar.innerHTML = '';
+            thumbnailListEl.innerHTML = '';
             if (thumbRenderObserver) thumbRenderObserver.disconnect();
 
             thumbRenderObserver = new IntersectionObserver((entries) => {
@@ -1782,14 +1835,20 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 thumb.style.width = viewport.width + 'px';
                 thumb.style.height = viewport.height + 'px';
                 thumb.title = 'Page ' + i;
-                thumb.addEventListener('click', () => scrollToPage(i));
+                thumb.addEventListener('click', () => {
+                    if (pageSelectMode) {
+                        togglePageSelection(i, thumb);
+                    } else {
+                        scrollToPage(i);
+                    }
+                });
 
                 const label = document.createElement('span');
                 label.className = 'thumb-page-number';
                 label.textContent = String(i);
                 thumb.appendChild(label);
 
-                thumbnailSidebar.appendChild(thumb);
+                thumbnailListEl.appendChild(thumb);
                 thumbRenderObserver.observe(thumb);
             }
 
@@ -1825,7 +1884,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function updateActiveThumbnail() {
-            const thumbs = thumbnailSidebar.querySelectorAll('.thumb-container');
+            const thumbs = thumbnailListEl.querySelectorAll('.thumb-container');
             let activeThumb = null;
             thumbs.forEach(t => {
                 const isActive = Number(t.dataset.pageNumber) === currentPage;
@@ -1836,6 +1895,53 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 activeThumb.scrollIntoView({ block: 'nearest' });
             }
         }
+
+        // ---- Visual page selection (for exporting a chosen set of pages) -------
+        // A different UX from the "Extract" tool (which takes a typed page-range
+        // string): here the user clicks thumbnails directly to build up a set.
+
+        let pageSelectMode = false;
+        let selectedPages = new Set();
+
+        function togglePageSelection(pageNum, thumbEl) {
+            if (selectedPages.has(pageNum)) {
+                selectedPages.delete(pageNum);
+                thumbEl.classList.remove('thumb-selected');
+            } else {
+                selectedPages.add(pageNum);
+                thumbEl.classList.add('thumb-selected');
+            }
+            updateExportSelectedButton();
+        }
+
+        function updateExportSelectedButton() {
+            const count = selectedPages.size;
+            exportSelectedPagesBtn.textContent = 'Export (' + count + ')';
+            exportSelectedPagesBtn.disabled = count === 0;
+        }
+
+        togglePageSelectBtn.addEventListener('click', () => {
+            pageSelectMode = !pageSelectMode;
+            togglePageSelectBtn.textContent = pageSelectMode ? 'Cancel Select' : 'Select Pages';
+            togglePageSelectBtn.classList.toggle('active', pageSelectMode);
+            exportSelectedPagesBtn.classList.toggle('hidden', !pageSelectMode);
+
+            if (!pageSelectMode) {
+                selectedPages.forEach(p => {
+                    const el = thumbnailListEl.querySelector('.thumb-container[data-page-number="' + p + '"]');
+                    if (el) el.classList.remove('thumb-selected');
+                });
+                selectedPages.clear();
+            }
+            updateExportSelectedButton();
+        });
+
+        exportSelectedPagesBtn.addEventListener('click', () => {
+            if (selectedPages.size === 0) return;
+            const pages = Array.from(selectedPages).sort((a, b) => a - b);
+            vscodeApi.postMessage({ type: 'extract-specific-pages', pages: pages });
+            togglePageSelectBtn.click(); // exit select mode after triggering the export
+        });
 
         function clampScale(scale) {
             return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
@@ -4164,26 +4270,9 @@ function parsePageRanges(input: string, maxPage: number): number[] {
 
 // ---- Extract / export selected pages ---------------------------------------
 
-async function extractPages(uri: vscode.Uri): Promise<void> {
-    let srcDoc: PDFDocument;
-    try {
-        const srcBytes = await vscode.workspace.fs.readFile(uri);
-        srcDoc = await PDFDocument.load(srcBytes);
-    } catch (e: any) {
-        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
-        return;
-    }
-
-    const pageCount = srcDoc.getPageCount();
-    const input = await vscode.window.showInputBox({
-        prompt: `Which pages to extract? (1-${pageCount}), e.g. "1-3,5,8-10"`,
-        validateInput: v => parsePageRanges(v, pageCount).length > 0 ? undefined : 'Enter at least one valid page number or range'
-    });
-    if (!input) return;
-
-    const pageNumbers = parsePageRanges(input, pageCount);
-    if (pageNumbers.length === 0) return;
-
+// Shared by both ways of choosing pages to extract: typing a range (extractPages)
+// and visually multi-selecting thumbnails (extractSpecificPages).
+async function buildAndSaveExtractedPdf(uri: vscode.Uri, srcDoc: PDFDocument, pageNumbers: number[]): Promise<void> {
     const outDoc = await PDFDocument.create();
     const copiedPages = await outDoc.copyPages(srcDoc, pageNumbers.map(n => n - 1));
     copiedPages.forEach(p => outDoc.addPage(p));
@@ -4215,6 +4304,52 @@ async function extractPages(uri: vscode.Uri): Promise<void> {
     if (choice === 'Open') {
         vscode.commands.executeCommand('vscode.openWith', saveUri, PdfViewerProvider.viewType);
     }
+}
+
+async function extractPages(uri: vscode.Uri): Promise<void> {
+    let srcDoc: PDFDocument;
+    try {
+        const srcBytes = await vscode.workspace.fs.readFile(uri);
+        srcDoc = await PDFDocument.load(srcBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const pageCount = srcDoc.getPageCount();
+    const input = await vscode.window.showInputBox({
+        prompt: `Which pages to extract? (1-${pageCount}), e.g. "1-3,5,8-10"`,
+        validateInput: v => parsePageRanges(v, pageCount).length > 0 ? undefined : 'Enter at least one valid page number or range'
+    });
+    if (!input) return;
+
+    const pageNumbers = parsePageRanges(input, pageCount);
+    if (pageNumbers.length === 0) return;
+
+    await buildAndSaveExtractedPdf(uri, srcDoc, pageNumbers);
+}
+
+// Visual variant: the webview's thumbnail sidebar collects an explicit list of
+// page numbers (via click-to-select), so no range-parsing/input-box step is
+// needed here - just validate and go straight to building the output file.
+async function extractSpecificPages(uri: vscode.Uri, pageNumbers: number[]): Promise<void> {
+    let srcDoc: PDFDocument;
+    try {
+        const srcBytes = await vscode.workspace.fs.readFile(uri);
+        srcDoc = await PDFDocument.load(srcBytes);
+    } catch (e: any) {
+        vscode.window.showErrorMessage('pdfDisplay: could not open the PDF - ' + (e?.message ?? String(e)));
+        return;
+    }
+
+    const pageCount = srcDoc.getPageCount();
+    const validPages = pageNumbers.filter(n => Number.isInteger(n) && n >= 1 && n <= pageCount);
+    if (validPages.length === 0) {
+        vscode.window.showInformationMessage('pdfDisplay: no valid pages were selected.');
+        return;
+    }
+
+    await buildAndSaveExtractedPdf(uri, srcDoc, validPages);
 }
 
 // ---- PDF compression ---------------------------------------------------------

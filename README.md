@@ -2,7 +2,7 @@
 
 # 📄 PDF Display for VS Code
 
-**A fast, fully-featured, and clean PDF viewer directly within Visual Studio Code.**
+**A fast, fully-featured, and clean PDF viewer directly within Visual Studio Code — now with Git integration, PDF toolkit, and diffing.**
 
 [![Visual Studio Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098FF?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=AnandShah.pdfdisplay)
 [![Stars](https://img.shields.io/github/stars/AnandShah10/PDFDisplay?style=social)](https://github.com/AnandShah10/PDFDisplay/stargazers)
@@ -16,72 +16,111 @@
 
 ---
 
-Tired of switching back and forth between your code editor and a separate PDF reader? **PDF Display** brings a complete, high-performance PDF viewing experience directly into your VS Code workspace. 
+Tired of switching between your code editor and a separate PDF reader? **PDF Display** brings a complete, high-performance PDF viewing and editing experience directly into VS Code.
 
-Powered by `pdf.js`, it renders documents beautifully and offers all the professional tools you expect from a dedicated PDF reader.
+Powered by `pdf.js` + `pdf-lib`, it includes professional tools, annotation support with Git-friendly sidecars, built-in PDF manipulation, version comparison, and more.
 
 ## ✨ Key Features
 
-- **🚀 Built-in Viewer**: Open and view PDF files instantly in a dedicated VS Code webview panel.
-- **🧭 Navigation & Zoom**: Effortlessly navigate through pages, jump to specific pages, and zoom in/out or fit to width.
-- **🗂️ Thumbnails & Table of Contents**: Jump around your document at lightning speed using the visual thumbnail sidebar or the interactive Table of Contents.
-- **🔍 Smart Search**: Fully functional in-document text search with accurate highlighting.
-- **📌 Annotations**: Add sticky notes directly onto pages! Notes are securely saved across your sessions.
-- **🔖 Bookmarks**: Bookmark critical pages for quick reference later.
-- **📊 Reading Progress**: A sleek visual progress bar indicates exactly how far along you are in the document.
-- **🌗 High Contrast Mode**: Toggle high contrast mode to invert colors—perfect for late-night coding and dark mode enthusiasts.
-- **🧠 Smart State Resumption**: Reopening a document automatically resumes on the exact page, zoom level, and contrast mode you left off.
-- **📋 Image Copy**: Easily copy any page (or embedded images within it) as a high-quality image directly to your clipboard.
-- **ℹ️ Document Properties**: View embedded metadata such as file size, author, creation date, and more.
-- **🔄 View Rotation**: Rotate the document view directly from the toolbar for those pesky landscape pages.
-- **📤 Export Annotations**: Bake sticky notes into a new annotated PDF (visible in any viewer) or export them as JSON for backup/sharing/archiving.
-- **⌨️ Command Palette Support**: Access all major features without touching the mouse via the VS Code Command Palette.
+### Core Viewer
+- **🚀 Built-in High-Performance Viewer**: Open PDFs instantly in a dedicated webview panel with smooth rendering.
+- **🧭 Navigation & Zoom**: Page navigation, jump to page, zoom (in/out/fit), rotation, and multiple **view modes** (Continuous, Single Page, Two-Page spread).
+- **🗂️ Thumbnails, TOC & Bookmarks**: Visual thumbnail sidebar, interactive Table of Contents, and persistent bookmarks.
+- **🔍 Smart Search**: Full-text search with accurate highlighting.
+- **📊 Reading Progress**: Visual progress bar showing how far you've read.
+- **🌗 High Contrast Mode**: One-click inversion for dark mode / accessibility.
+- **📋 Image Tools**: Copy current page as image *or* extract/copy embedded images from any page.
+- **ℹ️ Document Properties**: View metadata (author, dates, size, etc.).
+- **🧠 Smart State Restoration**: Reopens exactly where you left off (page, zoom, view mode, contrast).
+
+### Annotations & Export
+- **📌 Sticky Notes**: Add draggable annotations directly on pages. Persisted in VS Code global state *and* a git-trackable `.annotations.json` sidecar (when inside a workspace).
+- **📤 Export Options**:
+  - Bake annotations into a new PDF (visible pins + wrapped text callouts via pdf-lib).
+  - Export annotations as JSON.
+  - **Merge Annotations In-Place** (overwrites original PDF with baked notes).
+  - Batch export pages as high-quality PNG images.
+
+### PDF Toolkit
+- **🛠️ Built-in Manipulation** (via pdf-lib):
+  - Extract pages (by range or "all").
+  - Compress PDF (object stream optimization).
+  - Split PDF by page ranges into multiple files.
+  - Merge multiple PDFs into one.
+- All tools accessible via toolbar, Command Palette, or keyboard shortcuts.
+
+### Git & Diff Integration
+- **🔄 Git Panel**: View repo status for the current PDF, commit changes (automatically includes PDF + sidecar annotations), and browse commit history with one-click "Compare".
+- **📊 PDF Diff / Comparison**: Compare current document vs. any Git revision *or* another PDF on disk. Supports:
+  - Overlay mode with pixel-difference heatmap (red/blue changes + % changed).
+  - Side-by-side mode.
+  - Independent navigation for both documents.
+
+### Productivity
+- **⌨️ Full Command Palette + Keybindings**: 30+ commands with sensible `Ctrl+Alt+` (or `Cmd+Alt+`) shortcuts.
+- **📤 Cross-Document Links**: Supports internal/external and GoToR links.
+- **⚡ Lazy Loading & Performance**: Fast even on large documents (IntersectionObserver thumbnails, retained context).
 
 ---
 
 ## 🚀 Quick Start
 
-1. Install the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=AnandShah.pdfdisplay).
-2. Open any `.pdf` file in your workspace Explorer by simply clicking on it!
+1. Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=AnandShah.pdfdisplay).
+2. Open any `.pdf` file — it will automatically use the PDF Display editor.
+3. Use the toolbar, side panels (TOC, Git, Diff, Properties), or Command Palette (`Ctrl+Shift+P` → type "PDF Display").
 
-**Alternatively**, you can use the Command Palette:
-1. Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
-2. Type `PDF Display: View PDF`.
-3. Choose a PDF file from your local file system.
+**Standalone open command**: `PDF Display: View PDF`.
 
 ---
 
 ## ⌨️ Shortcuts & Commands
 
-All extension commands can be found in the Command Palette under the `PDF Display:` prefix, and many can be bound to your favorite keyboard shortcuts:
+All features are available in the Command Palette under the `PDF Display:` prefix. Many have default keybindings (active only when a PDF viewer is focused):
 
-| Command | Action | Default Keybinding |
-|---------|--------|--------------------|
-| `pdfDisplay.openPdf` | Open a PDF file | - |
-| `pdfDisplay.find` | Open Search Bar | `Ctrl+F` / `Cmd+F` |
-| `pdfDisplay.nextPage` | Go to Next Page | `PageDown` |
-| `pdfDisplay.prevPage` | Go to Previous Page | `PageUp` |
-| `pdfDisplay.toggleToc` | Toggle Table of Contents | `Ctrl+Alt+T` / `Cmd+Alt+T` |
-| `pdfDisplay.toggleHighContrast` | Toggle High Contrast | `Ctrl+Alt+H` / `Cmd+Alt+H` |
-| `pdfDisplay.copyPageImage` | Copy Page to Clipboard | `Ctrl+Alt+C` / `Cmd+Alt+C` |
-| `pdfDisplay.rotateView` | Rotate View | `Ctrl+Alt+R` / `Cmd+Alt+R` |
-| `pdfDisplay.toggleProperties` | Toggle Document Properties | `Ctrl+Alt+P` / `Cmd+Alt+P` |
-| `pdfDisplay.toggleAnnotate` | Toggle Annotate Mode (Sticky Notes) | - |
-| `pdfDisplay.exportAnnotatedPdf` | Export Annotated PDF (bake notes in) | - |
-| `pdfDisplay.exportAnnotations` | Export Annotations as JSON | - |
+| Category | Command | Default Keybinding | Description |
+|----------|---------|--------------------|-------------|
+| **Navigation** | Next Page | `PageDown` | Go to next page |
+| | Previous Page | `PageUp` | Go to previous page |
+| | Go to Page... | - | Jump to specific page number |
+| | Find in Document | `Ctrl/Cmd + F` | Open search |
+| **View** | Toggle Thumbnails | - | Show/hide sidebar thumbnails |
+| | Toggle Table of Contents | `Ctrl+Alt+T` / `Cmd+Alt+T` | Show interactive TOC |
+| | Toggle Bookmarks | - | Show/hide bookmarks panel |
+| | Bookmark Current Page | - | Add bookmark |
+| | Toggle High Contrast | `Ctrl+Alt+H` / `Cmd+Alt+H` | Invert colors |
+| | Rotate View | `Ctrl+Alt+R` / `Cmd+Alt+R` | Rotate document 90° |
+| | Toggle Properties | `Ctrl+Alt+P` / `Cmd+Alt+P` | Show metadata |
+| | Toggle Tools Bar | `Ctrl+Alt+Q` / `Cmd+Alt+Q` | Show extra toolbar |
+| | View Mode - Continuous | `Ctrl+Alt+L` / `Cmd+Alt+L` | Scrollable pages |
+| | View Mode - Single Page | `Ctrl+Alt+N` / `Cmd+Alt+N` | One page at a time |
+| | View Mode - Two Page | `Ctrl+Alt+W` / `Cmd+Alt+W` | Two-page spread |
+| **Annotations & Images** | Add Sticky Note | - | Enter annotation mode |
+| | Copy Current Page Image | `Ctrl+Alt+C` / `Cmd+Alt+C` | Clipboard (rendered page) |
+| | Copy Images From Page | `Ctrl+Alt+I` / `Cmd+Alt+I` | Extract embedded images |
+| | Download Annotated PDF | `Ctrl+Alt+D` / `Cmd+Alt+D` | Export with baked notes |
+| | Export Annotations as JSON | `Ctrl+Alt+J` / `Cmd+Alt+J` | Portable JSON backup |
+| | Convert Pages to Images | `Ctrl+Alt+O` / `Cmd+Alt+O` | Batch PNG export |
+| **PDF Toolkit** | Extract / Export Selected Pages | `Ctrl+Alt+E` / `Cmd+Alt+E` | Save pages to new PDF |
+| | Compress PDF | `Ctrl+Alt+X` / `Cmd+Alt+X` | Optimize file size |
+| | Split PDF by Page Range | `Ctrl+Alt+S` / `Cmd+Alt+S` | Create multiple files |
+| | Merge PDFs... | `Ctrl+Alt+U` / `Cmd+Alt+U` | Combine several PDFs |
+| | Merge Annotations into PDF (Overwrite) | `Ctrl+Alt+M` / `Cmd+Alt+M` | Bake notes in-place |
+| **Git & Diff** | Toggle Git Panel | `Ctrl+Alt+G` / `Cmd+Alt+G` | Status, commit, history |
+| | Compare PDF Versions | `Ctrl+Alt+V` / `Cmd+Alt+V` | Open diff panel (Git or file) |
+
+> **Tip**: Many toolbar buttons also have hover tooltips. The Git and Diff panels appear as collapsible side panels inside the viewer.
 
 ---
 
 ## ⚙️ Requirements
 
-- Visual Studio Code version `1.80.0` or higher.
+- Visual Studio Code 1.80.0 or higher.
+- For Git features: a Git repository with the PDF file inside it (the extension uses the `git` CLI via the configured `git.path` setting).
 
 ## 🤝 Contributing
 
-We welcome contributions! Whether it's a bug report, feature request, or a pull request, your input helps make this extension better for everyone.
-
-Check out our [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details on how to set up the project locally and contribute.
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
 
 ## 📄 License
 
-This project is open-source and licensed under the [MIT License](LICENSE).
+[MIT License](LICENSE)
