@@ -364,37 +364,63 @@
         return packChunks(scored, budget, 'pages ' + fromPage + '-' + toPage);
     }
 
-    /** Map-reduce batches: split full doc into sequential batches under budget for host-side multi-pass. */
-    function coverageBatches(batchBudget) {
-        batchBudget = batchBudget || CONTEXT_BUDGET;
+    /**
+     * Stratified map-reduce batches (max 5) spanning the whole document.
+     * Avoids dozens of sequential API calls on long PDFs.
+     */
+    function coverageBatches(batchBudget, maxBatches) {
+        batchBudget = batchBudget || Math.floor(CONTEXT_BUDGET * 0.9);
+        maxBatches = maxBatches || 5;
         if (!index || !index.chunks.length) return [];
-        var batches = [];
-        var cur = [];
-        var chars = 0;
-        var pages = [];
-        for (var i = 0; i < index.chunks.length; i++) {
-            var c = index.chunks[i];
-            var block = '[Page ' + c.page + ']\n' + c.text;
-            if (chars + block.length > batchBudget && cur.length) {
-                batches.push({
-                    text: cur.join('\n\n'),
-                    pages: pages.slice(),
-                    meta: 'batch ' + (batches.length + 1) + ' · pages ' + pages[0] + '-' + pages[pages.length - 1]
-                });
-                cur = [];
-                chars = 0;
-                pages = [];
+        var totalPages = index.totalPages || 1;
+        var chunks = index.chunks;
+        if (chunks.length <= 8) {
+            // Small doc: single batch
+            var all = [];
+            var pages = [];
+            for (var i = 0; i < chunks.length; i++) {
+                all.push('[Page ' + chunks[i].page + ']\n' + chunks[i].text);
+                if (pages.indexOf(chunks[i].page) < 0) pages.push(chunks[i].page);
             }
-            cur.push(block);
-            chars += block.length + 2;
-            if (pages.indexOf(c.page) < 0) pages.push(c.page);
+            return [{ text: all.join('\n\n'), pages: pages, meta: 'full document · ' + chunks.length + ' chunks' }];
         }
-        if (cur.length) {
-            batches.push({
-                text: cur.join('\n\n'),
-                pages: pages.slice(),
-                meta: 'batch ' + (batches.length + 1) + ' · pages ' + pages[0] + '-' + pages[pages.length - 1]
+        var bands = Math.min(maxBatches, totalPages, Math.max(2, Math.ceil(chunks.length / 12)));
+        var bandSize = totalPages / bands;
+        var batches = [];
+        for (var b = 0; b < bands; b++) {
+            var lo = Math.floor(b * bandSize) + 1;
+            var hi = Math.floor((b + 1) * bandSize);
+            if (hi < lo) hi = lo;
+            var bandChunks = [];
+            for (var c = 0; c < chunks.length; c++) {
+                if (chunks[c].page >= lo && chunks[c].page <= hi) bandChunks.push(chunks[c]);
+            }
+            // Prefer denser chunks within the band under budget
+            bandChunks.sort(function (a, b2) { return b2.len - a.len; });
+            var parts = [];
+            var chars = 0;
+            var pgs = [];
+            for (var k = 0; k < bandChunks.length; k++) {
+                var block = '[Page ' + bandChunks[k].page + ']\n' + bandChunks[k].text;
+                if (chars + block.length > batchBudget && parts.length) break;
+                parts.push(block);
+                chars += block.length + 2;
+                if (pgs.indexOf(bandChunks[k].page) < 0) pgs.push(bandChunks[k].page);
+            }
+            // restore reading order
+            parts.sort(function (a, b2) {
+                var pa = parseInt(a.match(/\[Page (\d+)\]/)[1], 10);
+                var pb = parseInt(b2.match(/\[Page (\d+)\]/)[1], 10);
+                return pa - pb;
             });
+            if (parts.length) {
+                pgs.sort(function (a, b2) { return a - b2; });
+                batches.push({
+                    text: parts.join('\n\n'),
+                    pages: pgs,
+                    meta: 'section ' + (b + 1) + '/' + bands + ' · pages ' + lo + '-' + hi
+                });
+            }
         }
         return batches;
     }

@@ -1,3 +1,7 @@
+## [0.0.28]
+- Reading Assist: fixed host timeout (6 min for AI jobs); progress bar during map-reduce; max 5 stratified batches.
+- Redesigned Assist panel UI + markdown-formatted answers (headings, lists, Q/A, copy button).
+
 ## [0.0.27]
 - Reading Assist uses **full-document** indexing (all pages), BM25-lite retrieval, page-diverse packing, and map-reduce summarization — no 12-page truncation.
 

@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDF Display",
   "description": "Fast PDF viewer and editor for VS Code: annotations (highlight, ink, shapes, signatures, sticky notes), page extract/split/merge/compress, export annotated PDFs, search, bookmarks, TOC, Git-friendly sidecars, and optional AI reading assist (translate, define, summarize, Q&A, flashcards).",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",

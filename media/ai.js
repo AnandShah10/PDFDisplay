@@ -35,17 +35,26 @@
         return 'ai_' + reqSeq + '_' + Date.now().toString(36);
     }
 
-    function request(type, payload) {
+    function request(type, payload, timeoutMs) {
         const requestId = rid();
+        // Assist (esp. map-reduce) can take several minutes; define/translate stay short.
+        var ms = timeoutMs;
+        if (ms == null) {
+            ms = type === 'ai-assist' ? 360000 : 45000;
+        }
         return new Promise(function (resolve, reject) {
             pending[requestId] = { resolve: resolve, reject: reject };
             post(Object.assign({ type: type, requestId: requestId }, payload));
             setTimeout(function () {
                 if (pending[requestId]) {
-                    pending[requestId].reject(new Error('Timed out waiting for extension host'));
+                    pending[requestId].reject(new Error(
+                        type === 'ai-assist'
+                            ? 'Timed out waiting for the AI response. Try a smaller scope (Current page) or a faster model.'
+                            : 'Timed out waiting for extension host'
+                    ));
                     delete pending[requestId];
                 }
-            }, 50000);
+            }, ms);
         });
     }
 
@@ -60,6 +69,19 @@
             };
             lastTarget = status.defaultTargetLang;
             updateAssistVisibility();
+            return;
+        }
+        if (msg.type === 'ai-assist-progress') {
+            var phase = msg.phase || 'generate';
+            var cur = msg.current || 0;
+            var tot = msg.total || 1;
+            var label = phase === 'map' ? 'Analyzing section' : phase === 'reduce' ? 'Merging results' : 'Generating';
+            setAssistOut(
+                '<div class="ai-progress">' +
+                '<div class="ai-progress-label">' + escapeHtml(label) + '… ' + cur + ' / ' + tot + '</div>' +
+                '<div class="ai-progress-bar"><span style="width:' + Math.max(6, Math.round((cur / tot) * 100)) + '%"></span></div>' +
+                '</div>'
+            );
             return;
         }
         if (msg.type === 'ai-translate-result' || msg.type === 'ai-define-result' || msg.type === 'ai-assist-result') {
@@ -329,6 +351,67 @@
     }
 
 
+
+    /** Lightweight markdown → safe HTML for assist answers. */
+    function formatAssistMarkdown(src) {
+        var text = String(src || '').replace(/\r\n/g, '\n').trim();
+        if (!text) return '<p class="ai-muted">Empty response.</p>';
+        var lines = text.split('\n');
+        var html = [];
+        var inList = false;
+        var inOl = false;
+        function closeLists() {
+            if (inList) { html.push('</ul>'); inList = false; }
+            if (inOl) { html.push('</ol>'); inOl = false; }
+        }
+        function inlineFmt(s) {
+            s = escapeHtml(s);
+            s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+            s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            s = s.replace(/(^|[^\*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
+            return s;
+        }
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            var h = /^(#{1,3})\s+(.+)$/.exec(line);
+            if (h) {
+                closeLists();
+                var level = h[1].length;
+                html.push('<h' + (level + 2) + ' class="ai-md-h">' + inlineFmt(h[2]) + '</h' + (level + 2) + '>');
+                continue;
+            }
+            var ul = /^[-*•]\s+(.+)$/.exec(line);
+            if (ul) {
+                if (inOl) { html.push('</ol>'); inOl = false; }
+                if (!inList) { html.push('<ul class="ai-md-ul">'); inList = true; }
+                html.push('<li>' + inlineFmt(ul[1]) + '</li>');
+                continue;
+            }
+            var ol = /^(\d+)[.)]\s+(.+)$/.exec(line);
+            if (ol) {
+                if (inList) { html.push('</ul>'); inList = false; }
+                if (!inOl) { html.push('<ol class="ai-md-ol">'); inOl = true; }
+                html.push('<li>' + inlineFmt(ol[2]) + '</li>');
+                continue;
+            }
+            if (!line.trim()) {
+                closeLists();
+                continue;
+            }
+            closeLists();
+            // Q/A flashcard lines
+            if (/^Q:\s*/i.test(line) || /^\*\*Q:\*\*/i.test(line)) {
+                html.push('<p class="ai-md-q">' + inlineFmt(line.replace(/^\*\*?Q:\*\*?\s*/i, 'Q: ')) + '</p>');
+            } else if (/^A:\s*/i.test(line) || /^\*\*A:\*\*/i.test(line)) {
+                html.push('<p class="ai-md-a">' + inlineFmt(line.replace(/^\*\*?A:\*\*?\s*/i, 'A: ')) + '</p>');
+            } else {
+                html.push('<p class="ai-md-p">' + inlineFmt(line) + '</p>');
+            }
+        }
+        closeLists();
+        return '<div class="ai-md">' + html.join('') + '</div>';
+    }
+
     function updateAssistVisibility() {
         ensureAssistUi();
         const fab = document.getElementById('ai-fab');
@@ -366,33 +449,54 @@
         panel.id = 'ai-panel';
         panel.innerHTML =
             '<div class="ai-panel-head">' +
-            '  <div><strong>Reading Assist</strong><div class="ai-sub" id="ai-panel-sub"></div></div>' +
-            '  <button type="button" class="ai-panel-close" title="Close" aria-label="Close">&times;</button>' +
+            '  <div class="ai-panel-title">' +
+            '    <span class="ai-panel-badge">AI</span>' +
+            '    <div><strong>Reading Assist</strong><div class="ai-sub" id="ai-panel-sub">Ready</div></div>' +
+            '  </div>' +
+            '  <div class="ai-panel-head-actions">' +
+            '    <button type="button" class="ai-icon-btn" id="ai-copy-out" title="Copy answer">Copy</button>' +
+            '    <button type="button" class="ai-icon-btn ai-panel-close" title="Close" aria-label="Close">&times;</button>' +
+            '  </div>' +
             '</div>' +
-            '<div class="ai-scope">Scope <select id="ai-scope">' +
-            '  <option value="page">Current page</option>' +
-            '  <option value="selection">Selection</option>' +
-            '  <option value="doc">Whole document (smart retrieval)</option>' +
-            '</select></div>' +
+            '<div class="ai-scope-row">' +
+            '  <label>Scope</label>' +
+            '  <select id="ai-scope">' +
+            '    <option value="page">Current page</option>' +
+            '    <option value="selection">Selection</option>' +
+            '    <option value="doc" selected>Whole document</option>' +
+            '  </select>' +
+            '</div>' +
             '<div class="ai-actions-grid">' +
-            '  <button type="button" data-act="summary">PDF summary</button>' +
-            '  <button type="button" data-act="chapter-summary">Chapter summary</button>' +
-            '  <button type="button" data-act="keypoints">Key points</button>' +
-            '  <button type="button" data-act="simplify">Simplify</button>' +
-            '  <button type="button" data-act="flashcards">Flashcards</button>' +
-            '  <button type="button" data-act="quiz">Quiz</button>' +
-            '  <button type="button" data-act="citation">Citations</button>' +
-            '  <button type="button" data-act="qa">Ask (Q&amp;A)</button>' +
+            '  <button type="button" data-act="summary"><span class="ai-act-icon">Σ</span><span>Summary</span></button>' +
+            '  <button type="button" data-act="chapter-summary"><span class="ai-act-icon">§</span><span>Chapter</span></button>' +
+            '  <button type="button" data-act="keypoints"><span class="ai-act-icon">✦</span><span>Key points</span></button>' +
+            '  <button type="button" data-act="simplify"><span class="ai-act-icon">Aa</span><span>Simplify</span></button>' +
+            '  <button type="button" data-act="flashcards"><span class="ai-act-icon">▣</span><span>Flashcards</span></button>' +
+            '  <button type="button" data-act="quiz"><span class="ai-act-icon">?</span><span>Quiz</span></button>' +
+            '  <button type="button" data-act="citation"><span class="ai-act-icon">”</span><span>Cite</span></button>' +
+            '  <button type="button" data-act="qa"><span class="ai-act-icon">💬</span><span>Ask</span></button>' +
             '</div>' +
-            '<div class="ai-out" id="ai-out"><span class="ai-muted">Pick an action. Only visible because Reading Assist is enabled in Settings.</span></div>' +
+            '<div class="ai-out" id="ai-out">' +
+            '  <div class="ai-empty">' +
+            '    <div class="ai-empty-title">Ask the document</div>' +
+            '    <div class="ai-muted">Pick an action above, or type a question below. Answers use full-document retrieval when scope is Whole document.</div>' +
+            '  </div>' +
+            '</div>' +
             '<div class="ai-chat-row">' +
-            '  <input id="ai-chat-input" type="text" placeholder="Ask about this PDF…" />' +
-            '  <button type="button" id="ai-chat-send">Send</button>' +
+            '  <input id="ai-chat-input" type="text" placeholder="Ask anything about this PDF…" autocomplete="off" />' +
+            '  <button type="button" id="ai-chat-send" title="Send">Send</button>' +
             '</div>';
+
         document.body.appendChild(panel);
 
         panel.querySelector('.ai-panel-close').addEventListener('click', function () {
             panel.classList.remove('visible');
+        });
+        var copyBtn = document.getElementById('ai-copy-out');
+        if (copyBtn) copyBtn.addEventListener('click', function () {
+            var out = document.getElementById('ai-out');
+            var t = out ? (out.innerText || '') : '';
+            if (t && navigator.clipboard) navigator.clipboard.writeText(t);
         });
         panel.querySelector('.ai-actions-grid').addEventListener('click', function (e) {
             const btn = e.target.closest('button[data-act]');
@@ -541,12 +645,13 @@
                 ? ' (full-document map-reduce, ' + gathered.batches.length + ' passes)'
                 : '') + '</p>');
             const res = await request('ai-assist', payload);
-            const body = escapeHtml(res.text || '');
-            setAssistOut('<div class="ai-muted" style="margin-bottom:8px">' +
-                escapeHtml(res.provider || '') +
-                (gathered.meta ? ' · ' + escapeHtml(gathered.meta) : '') +
-                (res.passes ? ' · ' + res.passes + ' passes' : '') +
-                '</div><div>' + body + '</div>');
+            const meta =
+                '<div class="ai-result-meta">' +
+                '<span class="ai-pill">' + escapeHtml(res.provider || 'ai') + '</span>' +
+                (gathered.meta ? '<span class="ai-pill ai-pill-muted">' + escapeHtml(gathered.meta) + '</span>' : '') +
+                (res.passes ? '<span class="ai-pill ai-pill-muted">' + res.passes + ' passes</span>' : '') +
+                '</div>';
+            setAssistOut(meta + formatAssistMarkdown(res.text || ''));
             if (action === 'chat' || action === 'qa') {
                 if (question) chatHistory.push({ role: 'user', content: question });
                 chatHistory.push({ role: 'assistant', content: res.text || '' });
