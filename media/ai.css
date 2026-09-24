@@ -1,0 +1,161 @@
+/* Selection assist + definition / translate popovers */
+
+#ai-sel-bar {
+    position: fixed;
+    z-index: 320;
+    display: none;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 8px;
+    background: var(--vscode-editorWidget-background, #2d2d30);
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+#ai-sel-bar.visible {
+    display: flex;
+}
+
+#ai-sel-bar button {
+    border: none;
+    background: transparent;
+    color: var(--text-color, #e0e0e0);
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+#ai-sel-bar button:hover {
+    background: var(--hover-bg, rgba(255, 255, 255, 0.1));
+}
+
+#ai-sel-bar .ai-sep {
+    width: 1px;
+    height: 16px;
+    background: var(--border-color, rgba(255, 255, 255, 0.12));
+}
+
+#ai-popover {
+    position: fixed;
+    z-index: 330;
+    width: min(360px, calc(100vw - 24px));
+    max-height: min(420px, calc(100vh - 48px));
+    overflow: auto;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--vscode-editorWidget-background, #252526);
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+    color: var(--text-color, #e8e8e8);
+    font-size: 12.5px;
+    line-height: 1.45;
+    display: none;
+}
+
+#ai-popover.visible {
+    display: block;
+}
+
+#ai-popover .ai-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+#ai-popover .ai-title {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+#ai-popover .ai-meta {
+    color: var(--muted-text-color, #9a9a9a);
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+#ai-popover .ai-close {
+    border: none;
+    background: transparent;
+    color: var(--muted-text-color, #aaa);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+#ai-popover .ai-close:hover {
+    color: var(--text-color, #fff);
+}
+
+#ai-popover .ai-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+#ai-popover .ai-body p {
+    margin: 0 0 8px;
+}
+
+#ai-popover .ai-pos {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--vscode-textLink-foreground, #4fc1ff);
+    margin: 10px 0 4px;
+}
+
+#ai-popover .ai-def {
+    margin: 0 0 6px;
+    padding-left: 12px;
+}
+
+#ai-popover .ai-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+#ai-popover .ai-actions button,
+#ai-popover select {
+    font-size: 12px;
+    border-radius: 5px;
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+    background: var(--input-bg, rgba(255, 255, 255, 0.06));
+    color: var(--text-color, #e0e0e0);
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+#ai-popover .ai-loading {
+    color: var(--muted-text-color, #aaa);
+}
+
+#ai-popover .ai-error {
+    color: var(--vscode-errorForeground, #f48771);
+}
+
+#ai-hover-tip {
+    position: fixed;
+    z-index: 310;
+    max-width: 280px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--vscode-editorHoverWidget-background, #252526);
+    border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+    color: var(--text-color, #ddd);
+    font-size: 12px;
+    line-height: 1.4;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+    pointer-events: none;
+    display: none;
+}
+
+#ai-hover-tip.visible {
+    display: block;
+}

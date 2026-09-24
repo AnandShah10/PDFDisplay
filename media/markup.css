@@ -294,8 +294,9 @@ body.tools-bar-open.markup-bar-open #markup-hint {
     inset: 0;
     z-index: 20;
     touch-action: none;
-    pointer-events: auto;
-    cursor: crosshair;
+    /* Pass events through in Select mode so text selection works */
+    pointer-events: none;
+    cursor: default;
 }
 
 .markup-catcher.is-text {
@@ -304,10 +305,15 @@ body.tools-bar-open.markup-bar-open #markup-hint {
 }
 
 .markup-catcher.is-draw {
+    pointer-events: auto !important;
     cursor: crosshair;
 }
 
 body.markup-drawing .link-layer {
+    pointer-events: none !important;
+}
+
+body.markup-drawing .text-layer {
     pointer-events: none !important;
 }
 

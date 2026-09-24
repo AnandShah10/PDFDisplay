@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import * as path from 'path';
 import { PDFDocument, StandardFonts, rgb, PDFFont, BlendMode, LineCapStyle } from 'pdf-lib';
+import { handleAiMessage } from './ai';
 
 export function activate(context: vscode.ExtensionContext) {
     const provider = new PdfViewerProvider(context);
@@ -62,6 +63,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('pdfDisplay.toggleAnnotate', () => postToActivePanel('toggle-annotate')),
         vscode.commands.registerCommand('pdfDisplay.undoMarkup', () => postToActivePanel('undo-markup')),
         vscode.commands.registerCommand('pdfDisplay.redoMarkup', () => postToActivePanel('redo-markup')),
+        vscode.commands.registerCommand('pdfDisplay.translateSelection', () => postToActivePanel('ai-translate-selection')),
+        vscode.commands.registerCommand('pdfDisplay.defineSelection', () => postToActivePanel('ai-define-selection')),
         vscode.commands.registerCommand('pdfDisplay.toggleBookmarks', () => postToActivePanel('toggle-bookmarks')),
         vscode.commands.registerCommand('pdfDisplay.bookmarkCurrentPage', () => postToActivePanel('bookmark-current-page')),
         vscode.commands.registerCommand('pdfDisplay.toggleToc', () => postToActivePanel('toggle-toc')),
@@ -227,6 +230,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             } else if (msg?.type === 'save-bookmarks') {
                 storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
+            } else if (msg?.type === 'ai-translate' || msg?.type === 'ai-define' || msg?.type === 'ai-status') {
+                handleAiMessage(msg, (payload) => webviewPanel.webview.postMessage(payload));
             } else if (msg?.type === 'debug-log') {
                 // Forwarded from the webview's own console (see debugLog() in the
                 // webview script) so its trace shows up in this same console too.
@@ -382,6 +387,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     private getHtmlForWebview(webview: vscode.Webview, fileName: string, nonce: string): string {
         const markupJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'markup.js'));
         const markupCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'markup.css'));
+        const aiJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'ai.js'));
+        const aiCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'ai.css'));
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -391,6 +398,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     <title>PDF Viewer - ${fileName}</title>
     <script nonce="${nonce}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="stylesheet" href="${markupCss}">
+    <link rel="stylesheet" href="${aiCss}">
     <style nonce="${nonce}">
         :root {
             /* VS Code injects --vscode-* custom properties into every webview and
@@ -3823,6 +3831,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'toggle-annotate': setAnnotateMode(!annotateMode); break;
                 case 'undo-markup': if (window.PdfMarkup) window.PdfMarkup.undo(); break;
                 case 'redo-markup': if (window.PdfMarkup) window.PdfMarkup.redo(); break;
+                case 'ai-translate-selection': if (window.PdfAi && window.PdfAi.translateSelection) window.PdfAi.translateSelection(); break;
+                case 'ai-define-selection': if (window.PdfAi && window.PdfAi.defineSelection) window.PdfAi.defineSelection(); break;
                 case 'toggle-bookmarks': toggleBookmarksBtn.click(); break;
                 case 'bookmark-current-page': bookmarkToggleCurrentBtn.click(); break;
                 case 'toggle-toc': toggleTocBtn.click(); break;
@@ -3848,6 +3858,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         window.addEventListener('message', (event) => {
             const msg = event.data;
+            if (window.PdfAi && typeof window.PdfAi.onHostMessage === 'function') {
+                window.PdfAi.onHostMessage(msg);
+            }
             if (msg.type === 'pdf-data') {
                 pdfDataReceived = true;
                 annotations = Array.isArray(msg.annotations) ? msg.annotations : [];
@@ -3895,6 +3908,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // (only if pdf.js itself actually loaded - no point fetching data
         // we can't render, and showError() has already fired above otherwise).
         let pdfDataReceived = false;
+        window.__pdfDisplayPost = function (msg) { vscodeApi.postMessage(msg); };
         window.__pdfDisplay = {
             get annotations() { return annotations; },
             setAnnotations: function (next, silent) {
@@ -3920,6 +3934,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
     </script>
     <script nonce="${nonce}" src="${markupJs}"></script>
+    <script nonce="${nonce}" src="${aiJs}"></script>
 </body>
 </html>`;
     }

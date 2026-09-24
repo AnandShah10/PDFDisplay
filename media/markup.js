@@ -519,15 +519,26 @@
             catcher.className = 'markup-catcher';
             bindCatcher(catcher, pageEl);
         }
-        // Always on top of text/link layers so drawing tools receive pointer events
+        // Always last so, when active, it sits above text/link layers
         pageEl.appendChild(catcher);
-        const drawing = !!DRAW_TOOLS[state.tool];
-        catcher.classList.toggle('is-text', !!TEXT_TOOLS[state.tool]);
-        catcher.classList.toggle('is-draw', drawing && !TEXT_TOOLS[state.tool]);
-        catcher.style.pointerEvents = TEXT_TOOLS[state.tool] ? 'none' : 'auto';
-        document.body.classList.toggle('markup-drawing', drawing);
+        // Select + text-markup tools must NOT cover the page — otherwise the
+        // normal cursor and text selection (Define / Translate) never work.
+        const isTextTool = !!TEXT_TOOLS[state.tool];
+        const isDrawTool = !!DRAW_TOOLS[state.tool];
+        const catcherActive = isDrawTool;
+        catcher.classList.toggle('is-text', isTextTool || state.tool === 'select');
+        catcher.classList.toggle('is-draw', catcherActive);
+        catcher.style.pointerEvents = catcherActive ? 'auto' : 'none';
+        catcher.style.cursor = catcherActive ? 'crosshair' : 'default';
+        document.body.classList.toggle('markup-drawing', catcherActive);
         pageEl.querySelectorAll('.link-layer').forEach(function (el) {
-            el.style.pointerEvents = drawing && !TEXT_TOOLS[state.tool] ? 'none' : '';
+            el.style.pointerEvents = catcherActive ? 'none' : '';
+        });
+        pageEl.querySelectorAll('.markup-note, .markup-text').forEach(function (el) {
+            el.style.pointerEvents = state.tool === 'select' ? 'auto' : 'none';
+        });
+        pageEl.querySelectorAll('.markup-note textarea, .markup-text textarea').forEach(function (el) {
+            el.style.pointerEvents = 'auto';
         });
     }
 
@@ -739,27 +750,33 @@
     }
 
     function setTool(tool) {
-        state.tool = tool;
-        const preset = PRESETS[tool];
+        state.tool = tool || 'select';
+        // Cancel any in-progress stroke when switching tools
+        state.drag = null;
+        state.draft = null;
+        const preset = PRESETS[state.tool];
         if (preset) {
             state.color = preset.color;
             state.opacity = preset.opacity;
             state.width = preset.width;
         }
-        if (tool !== 'select') {
+        if (state.tool !== 'select') {
             state.selectedId = null;
             state.editingId = null;
         }
-        if (tool === 'signature' && !state.signatureSrc) openSig();
+        if (state.tool === 'signature' && !state.signatureSrc) openSig();
         renderAll();
-        showHint(HINTS[tool] || '');
+        showHint(HINTS[state.tool] || '');
         const h = host();
         const container = h && h.container;
         if (container) {
-            container.classList.toggle('annotate-cursor', !!DRAW_TOOLS[tool]);
+            // Crosshair only while actively drawing/placing — not on Select
+            container.classList.toggle('annotate-cursor', !!DRAW_TOOLS[state.tool]);
+            container.style.cursor = '';
         }
+        document.body.classList.toggle('markup-drawing', !!DRAW_TOOLS[state.tool]);
         const stickyBtn = document.getElementById('toggle-annotate');
-        if (stickyBtn) stickyBtn.classList.toggle('active', tool === 'sticky');
+        if (stickyBtn) stickyBtn.classList.toggle('active', state.tool === 'sticky');
     }
 
     function syncBar() {

@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.22",
+  "version": "0.0.23",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -191,6 +191,16 @@
         "command": "pdfDisplay.viewModeTwo",
         "title": "PDF Display: View Mode - Two Page",
         "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "pdfDisplay.translateSelection",
+        "title": "PDF Display: Translate Selection",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "pdfDisplay.defineSelection",
+        "title": "PDF Display: Define Selection",
+        "icon": "$(book)"
       }
     ],
     "keybindings": [
@@ -359,7 +369,47 @@
         ],
         "priority": "default"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "PDF Display",
+      "properties": {
+        "pdfDisplay.ai.provider": {
+          "type": "string",
+          "enum": [
+            "none",
+            "openai",
+            "azure",
+            "ollama",
+            "gemini",
+            "anthropic",
+            "grok",
+            "custom"
+          ],
+          "default": "none",
+          "description": "Optional AI provider for translate/define and future reading features. 'none' uses free open APIs only."
+        },
+        "pdfDisplay.ai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the selected AI provider (not required for Ollama or free fallbacks)."
+        },
+        "pdfDisplay.ai.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API base URL override (e.g. https://api.openai.com, http://127.0.0.1:11434, Azure resource endpoint)."
+        },
+        "pdfDisplay.ai.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model name (e.g. gpt-4o-mini, llama3.2, gemini-2.0-flash, claude-3-5-haiku-latest, grok-2-latest)."
+        },
+        "pdfDisplay.ai.defaultTargetLang": {
+          "type": "string",
+          "default": "es",
+          "description": "Default target language code for translation (es, fr, de, hi, zh, ja, \u2026)."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

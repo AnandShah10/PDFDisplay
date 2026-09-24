@@ -1,3 +1,7 @@
+## [0.0.23]
+- Optional AI assist: **Translate selection** and **Define** (hover + selection toolbar).
+- Works without an API key via MyMemory + Free Dictionary API; configure OpenAI / Azure / Ollama / Gemini / Anthropic / Grok under `pdfDisplay.ai.*` for better quality and longer text.
+
 # Changelog
 
 All notable changes to the "PDFDisplay" extension will be documented in this file.

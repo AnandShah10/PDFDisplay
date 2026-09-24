@@ -1,0 +1,372 @@
+/* Selection translate + definition assist for PDFDisplay webview */
+(function () {
+    const LANGS = [
+        ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['hi', 'Hindi'],
+        ['zh', 'Chinese'], ['ja', 'Japanese'], ['pt', 'Portuguese'], ['ar', 'Arabic'],
+        ['ru', 'Russian'], ['it', 'Italian'], ['ko', 'Korean'], ['en', 'English']
+    ];
+
+    let status = { configured: false, provider: 'none', defaultTargetLang: 'es' };
+    let lastTarget = 'es';
+    let reqSeq = 0;
+    let pending = {};
+    let hoverTimer = null;
+    let hoverWord = '';
+
+    function vscodeApi() {
+        return window.__pdfDisplayVscode || (typeof acquireVsCodeApi === 'function' ? null : null);
+    }
+
+    function post(msg) {
+        try {
+            if (window.__pdfDisplayPost) {
+                window.__pdfDisplayPost(msg);
+                return;
+            }
+            // fallback if host exposed vscode api on window from main script
+            if (window.vscodeApi) window.vscodeApi.postMessage(msg);
+        } catch (e) { /* ignore */ }
+    }
+
+    function rid() {
+        reqSeq += 1;
+        return 'ai_' + reqSeq + '_' + Date.now().toString(36);
+    }
+
+    function request(type, payload) {
+        const requestId = rid();
+        return new Promise(function (resolve, reject) {
+            pending[requestId] = { resolve: resolve, reject: reject };
+            post(Object.assign({ type: type, requestId: requestId }, payload));
+            setTimeout(function () {
+                if (pending[requestId]) {
+                    pending[requestId].reject(new Error('Timed out waiting for extension host'));
+                    delete pending[requestId];
+                }
+            }, 50000);
+        });
+    }
+
+    function onHostMessage(msg) {
+        if (!msg || !msg.type) return;
+        if (msg.type === 'ai-status-result') {
+            status = {
+                configured: !!msg.configured,
+                provider: msg.provider || 'none',
+                defaultTargetLang: msg.defaultTargetLang || 'es'
+            };
+            lastTarget = status.defaultTargetLang;
+            return;
+        }
+        if (msg.type === 'ai-translate-result' || msg.type === 'ai-define-result') {
+            const p = pending[msg.requestId];
+            if (!p) return;
+            delete pending[msg.requestId];
+            if (msg.ok) p.resolve(msg);
+            else p.reject(new Error(msg.error || 'Request failed'));
+        }
+    }
+
+    window.PdfAi = {
+        onHostMessage: onHostMessage,
+        request: request,
+        translateSelection: function () {
+            const t = getSelectionText();
+            if (t) runTranslate(t);
+        },
+        defineSelection: function () {
+            const t = getSelectionText();
+            if (t) runDefine(t);
+        }
+    };
+
+    function getSelectionText() {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return '';
+        return sel.toString().replace(/\s+/g, ' ').trim();
+    }
+
+    function selectionRect() {
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return null;
+        const r = sel.getRangeAt(0).getBoundingClientRect();
+        if (!r || (!r.width && !r.height)) return null;
+        return r;
+    }
+
+    function ensureUi() {
+        if (document.getElementById('ai-sel-bar')) return;
+
+        const bar = document.createElement('div');
+        bar.id = 'ai-sel-bar';
+        bar.innerHTML =
+            '<button type="button" data-act="define" title="Define selection">Define</button>' +
+            '<div class="ai-sep"></div>' +
+            '<button type="button" data-act="translate" title="Translate selection">Translate</button>';
+        bar.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); });
+        bar.addEventListener('click', function (e) {
+            const act = e.target && e.target.getAttribute && e.target.getAttribute('data-act');
+            const text = getSelectionText();
+            if (!text || !act) return;
+            if (act === 'define') runDefine(text);
+            if (act === 'translate') runTranslate(text);
+        });
+        document.body.appendChild(bar);
+
+        const pop = document.createElement('div');
+        pop.id = 'ai-popover';
+        document.body.appendChild(pop);
+
+        const tip = document.createElement('div');
+        tip.id = 'ai-hover-tip';
+        document.body.appendChild(tip);
+    }
+
+    function hideBar() {
+        const bar = document.getElementById('ai-sel-bar');
+        if (bar) bar.classList.remove('visible');
+    }
+
+    function showBar() {
+        const text = getSelectionText();
+        const rect = selectionRect();
+        const bar = document.getElementById('ai-sel-bar');
+        if (!bar || !text || !rect) {
+            hideBar();
+            return;
+        }
+        // Only when Select or text-markup tools — drawing tools block selection
+        if (window.PdfMarkup && window.PdfMarkup.tool) {
+            const t = window.PdfMarkup.tool;
+            const ok = t === 'select' || t === 'highlight' || t === 'underline' || t === 'strikeout';
+            if (!ok) {
+                hideBar();
+                return;
+            }
+        }
+        bar.classList.add('visible');
+        const bw = bar.offsetWidth || 160;
+        const left = Math.min(window.innerWidth - bw - 8, Math.max(8, rect.left + rect.width / 2 - bw / 2));
+        const top = Math.max(8, rect.top - 40);
+        bar.style.left = left + 'px';
+        bar.style.top = top + 'px';
+    }
+
+    function placePopover(anchorRect) {
+        const pop = document.getElementById('ai-popover');
+        if (!pop) return;
+        pop.classList.add('visible');
+        const pw = pop.offsetWidth || 320;
+        const ph = pop.offsetHeight || 120;
+        let left = 16;
+        let top = 80;
+        if (anchorRect) {
+            left = Math.min(window.innerWidth - pw - 12, Math.max(8, anchorRect.left));
+            top = anchorRect.bottom + 10;
+            if (top + ph > window.innerHeight - 8) top = Math.max(8, anchorRect.top - ph - 10);
+        }
+        pop.style.left = left + 'px';
+        pop.style.top = top + 'px';
+    }
+
+    function closePopover() {
+        const pop = document.getElementById('ai-popover');
+        if (pop) {
+            pop.classList.remove('visible');
+            pop.innerHTML = '';
+        }
+    }
+
+    function renderPopover(title, meta, bodyHtml, extraFooter) {
+        const pop = document.getElementById('ai-popover');
+        if (!pop) return;
+        pop.innerHTML =
+            '<div class="ai-head"><div><div class="ai-title"></div><div class="ai-meta"></div></div>' +
+            '<button type="button" class="ai-close" title="Close" aria-label="Close">&times;</button></div>' +
+            '<div class="ai-body"></div>' +
+            (extraFooter || '');
+        pop.querySelector('.ai-title').textContent = title;
+        pop.querySelector('.ai-meta').textContent = meta || '';
+        pop.querySelector('.ai-body').innerHTML = bodyHtml;
+        pop.querySelector('.ai-close').addEventListener('click', closePopover);
+    }
+
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    async function runDefine(text) {
+        hideBar();
+        const rect = selectionRect();
+        renderPopover('Definition', 'Looking up…', '<p class="ai-loading">Fetching definition…</p>');
+        placePopover(rect);
+        try {
+            const res = await request('ai-define', { text: text });
+            let html = '';
+            if (res.phonetic) html += '<p class="ai-meta">' + escapeHtml(res.phonetic) + '</p>';
+            (res.meanings || []).forEach(function (m) {
+                if (m.partOfSpeech) html += '<div class="ai-pos">' + escapeHtml(m.partOfSpeech) + '</div>';
+                (m.definitions || []).forEach(function (d, i) {
+                    html += '<p class="ai-def">' + (i + 1) + '. ' + escapeHtml(d) + '</p>';
+                });
+            });
+            const provider = res.provider === 'dictionaryapi' ? 'Free Dictionary API' : ('AI · ' + res.provider);
+            renderPopover(res.word || text, provider, html || '<p>No definition found.</p>');
+            placePopover(rect);
+        } catch (e) {
+            renderPopover('Definition', '', '<p class="ai-error">' + escapeHtml(e.message || String(e)) + '</p>');
+            placePopover(rect);
+        }
+    }
+
+    async function runTranslate(text, targetLang) {
+        hideBar();
+        const rect = selectionRect();
+        const target = targetLang || lastTarget || status.defaultTargetLang || 'es';
+        lastTarget = target;
+
+        let selectHtml = '<div class="ai-actions"><label>To <select id="ai-lang">';
+        LANGS.forEach(function (pair) {
+            selectHtml += '<option value="' + pair[0] + '"' + (pair[0] === target ? ' selected' : '') + '>' + pair[1] + '</option>';
+        });
+        selectHtml += '</select></label><button type="button" id="ai-copy">Copy</button></div>';
+
+        renderPopover('Translate', 'Working…', '<p class="ai-loading">Translating…</p>', selectHtml);
+        placePopover(rect);
+        bindTranslateControls(text, rect);
+
+        try {
+            const res = await request('ai-translate', { text: text, targetLang: target });
+            const provider = res.provider === 'mymemory' ? 'MyMemory (free)' : ('AI · ' + res.provider);
+            renderPopover(
+                'Translate',
+                provider + ' → ' + target,
+                '<p>' + escapeHtml(res.translated) + '</p>',
+                selectHtml
+            );
+            placePopover(rect);
+            bindTranslateControls(text, rect, res.translated);
+        } catch (e) {
+            renderPopover('Translate', '', '<p class="ai-error">' + escapeHtml(e.message || String(e)) + '</p>', selectHtml);
+            placePopover(rect);
+            bindTranslateControls(text, rect);
+        }
+    }
+
+    function bindTranslateControls(sourceText, rect, translated) {
+        const sel = document.getElementById('ai-lang');
+        if (sel) {
+            sel.value = lastTarget;
+            sel.onchange = function () {
+                lastTarget = sel.value;
+                runTranslate(sourceText, sel.value);
+            };
+        }
+        const copy = document.getElementById('ai-copy');
+        if (copy) {
+            copy.onclick = function () {
+                const t = translated || (document.querySelector('#ai-popover .ai-body') || {}).textContent || '';
+                if (t && navigator.clipboard) navigator.clipboard.writeText(t);
+            };
+        }
+    }
+
+    function wordAtPoint(x, y) {
+        let range = null;
+        if (document.caretRangeFromPoint) range = document.caretRangeFromPoint(x, y);
+        else if (document.caretPositionFromPoint) {
+            const pos = document.caretPositionFromPoint(x, y);
+            if (pos) {
+                range = document.createRange();
+                range.setStart(pos.offsetNode, pos.offset);
+                range.setEnd(pos.offsetNode, pos.offset);
+            }
+        }
+        if (!range || !range.startContainer || range.startContainer.nodeType !== Node.TEXT_NODE) return null;
+        const text = range.startContainer.textContent || '';
+        let i = range.startOffset;
+        if (!text || i > text.length) return null;
+        const isWord = function (ch) { return /[\p{L}\p{N}'’-]/u.test(ch); };
+        if (i > 0 && !isWord(text[i]) && isWord(text[i - 1])) i -= 1;
+        if (!isWord(text[i] || '')) return null;
+        let a = i, b = i;
+        while (a > 0 && isWord(text[a - 1])) a -= 1;
+        while (b < text.length && isWord(text[b])) b += 1;
+        const word = text.slice(a, b).trim();
+        if (!word || word.length > 40) return null;
+        return word;
+    }
+
+    async function showHoverDefine(word, x, y) {
+        const tip = document.getElementById('ai-hover-tip');
+        if (!tip) return;
+        tip.textContent = '…';
+        tip.classList.add('visible');
+        tip.style.left = Math.min(window.innerWidth - 290, Math.max(8, x + 12)) + 'px';
+        tip.style.top = Math.min(window.innerHeight - 80, Math.max(8, y + 14)) + 'px';
+        try {
+            const res = await request('ai-define', { text: word });
+            const first = (res.meanings && res.meanings[0] && res.meanings[0].definitions[0]) || '';
+            const pos = (res.meanings && res.meanings[0] && res.meanings[0].partOfSpeech) ? res.meanings[0].partOfSpeech + ' · ' : '';
+            tip.textContent = (res.word || word) + (res.phonetic ? ' ' + res.phonetic : '') + '\n' + pos + first;
+        } catch (e) {
+            tip.classList.remove('visible');
+        }
+    }
+
+    function hideHover() {
+        const tip = document.getElementById('ai-hover-tip');
+        if (tip) tip.classList.remove('visible');
+        hoverWord = '';
+    }
+
+    function boot() {
+        ensureUi();
+        post({ type: 'ai-status', requestId: rid() });
+
+        document.addEventListener('mouseup', function () {
+            setTimeout(showBar, 10);
+        });
+        document.addEventListener('keyup', function (e) {
+            if (e.key === 'Escape') {
+                closePopover();
+                hideBar();
+                hideHover();
+            } else {
+                setTimeout(showBar, 10);
+            }
+        });
+        document.addEventListener('mousedown', function (e) {
+            const pop = document.getElementById('ai-popover');
+            const bar = document.getElementById('ai-sel-bar');
+            if (pop && pop.classList.contains('visible') && !pop.contains(e.target)) closePopover();
+            if (bar && !bar.contains(e.target)) hideBar();
+        });
+
+        // Definitions on hover over the invisible text layer (English words)
+        document.addEventListener('mousemove', function (e) {
+            const inText = e.target && e.target.closest && e.target.closest('.text-layer');
+            if (!inText) {
+                clearTimeout(hoverTimer);
+                hideHover();
+                return;
+            }
+            const word = wordAtPoint(e.clientX, e.clientY);
+            if (!word || word === hoverWord) return;
+            hoverWord = word;
+            clearTimeout(hoverTimer);
+            hideHover();
+            hoverTimer = setTimeout(function () {
+                if (hoverWord === word) showHoverDefine(word, e.clientX, e.clientY);
+            }, 550);
+        });
+        document.addEventListener('scroll', function () { hideHover(); hideBar(); }, true);
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+})();
