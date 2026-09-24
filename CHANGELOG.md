@@ -1,3 +1,8 @@
+## [0.0.24]
+- API key stored in VS Code **Secret Storage** (Command Palette → Set / Clear AI API Key); no longer visible in Settings.
+- Azure OpenAI: new `pdfDisplay.ai.azureApiVersion` setting (default `2024-06-01`).
+- Define works without an API key via Free Dictionary API + Wiktionary fallback (better word cleaning for PDF text).
+
 ## [0.0.23]
 - Optional AI assist: **Translate selection** and **Define** (hover + selection toolbar).
 - Works without an API key via MyMemory + Free Dictionary API; configure OpenAI / Azure / Ollama / Gemini / Anthropic / Grok under `pdfDisplay.ai.*` for better quality and longer text.

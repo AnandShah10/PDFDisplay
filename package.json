@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -201,6 +201,16 @@
         "command": "pdfDisplay.defineSelection",
         "title": "PDF Display: Define Selection",
         "icon": "$(book)"
+      },
+      {
+        "command": "pdfDisplay.setAiApiKey",
+        "title": "PDF Display: Set AI API Key",
+        "icon": "$(key)"
+      },
+      {
+        "command": "pdfDisplay.clearAiApiKey",
+        "title": "PDF Display: Clear AI API Key",
+        "icon": "$(trash)"
       }
     ],
     "keybindings": [
@@ -386,27 +396,27 @@
             "custom"
           ],
           "default": "none",
-          "description": "Optional AI provider for translate/define and future reading features. 'none' uses free open APIs only."
-        },
-        "pdfDisplay.ai.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for the selected AI provider (not required for Ollama or free fallbacks)."
+          "description": "Optional AI provider. 'none' uses free open APIs only (MyMemory, Free Dictionary, Wiktionary). API keys are set via Command Palette \u2192 'PDF Display: Set AI API Key' (stored in Secret Storage, never shown in Settings)."
         },
         "pdfDisplay.ai.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional API base URL override (e.g. https://api.openai.com, http://127.0.0.1:11434, Azure resource endpoint)."
+          "description": "API base URL. Azure: https://YOUR_RESOURCE.openai.azure.com  |  Ollama: http://127.0.0.1:11434  |  leave empty for provider defaults."
         },
         "pdfDisplay.ai.model": {
           "type": "string",
           "default": "",
-          "description": "Model name (e.g. gpt-4o-mini, llama3.2, gemini-2.0-flash, claude-3-5-haiku-latest, grok-2-latest)."
+          "description": "Model or Azure deployment name (e.g. gpt-4o-mini, llama3.2, gemini-2.0-flash)."
         },
         "pdfDisplay.ai.defaultTargetLang": {
           "type": "string",
           "default": "es",
           "description": "Default target language code for translation (es, fr, de, hi, zh, ja, \u2026)."
+        },
+        "pdfDisplay.ai.azureApiVersion": {
+          "type": "string",
+          "default": "2024-06-01",
+          "description": "Azure OpenAI API version query parameter (e.g. 2024-06-01, 2024-08-01-preview). Only used when provider is azure."
         }
       }
     }

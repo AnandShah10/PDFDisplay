@@ -15,23 +15,46 @@ export interface AiSettings {
     apiKey: string;
     baseUrl: string;
     model: string;
+    azureApiVersion: string;
     defaultTargetLang: string;
 }
 
-export function getAiSettings(): AiSettings {
+const SECRET_KEY = 'pdfDisplay.ai.apiKey';
+let secretStorage: vscode.SecretStorage | undefined;
+
+/** Call once from activate() so the API key lives in VS Code SecretStorage (never settings.json). */
+export function initAiSecrets(secrets: vscode.SecretStorage): void {
+    secretStorage = secrets;
+}
+
+export async function setAiApiKey(key: string | undefined): Promise<void> {
+    if (!secretStorage) throw new Error('Secret storage not initialized');
+    const trimmed = (key || '').trim();
+    if (trimmed) await secretStorage.store(SECRET_KEY, trimmed);
+    else await secretStorage.delete(SECRET_KEY);
+}
+
+export async function hasAiApiKey(): Promise<boolean> {
+    if (!secretStorage) return false;
+    return Boolean(await secretStorage.get(SECRET_KEY));
+}
+
+export async function getAiSettings(): Promise<AiSettings> {
     const cfg = vscode.workspace.getConfiguration('pdfDisplay.ai');
+    const apiKey = secretStorage ? ((await secretStorage.get(SECRET_KEY)) || '').trim() : '';
     return {
         provider: (cfg.get<string>('provider') || 'none') as AiProvider,
-        apiKey: (cfg.get<string>('apiKey') || '').trim(),
+        apiKey,
         baseUrl: (cfg.get<string>('baseUrl') || '').trim().replace(/\/$/, ''),
         model: (cfg.get<string>('model') || '').trim(),
+        azureApiVersion: (cfg.get<string>('azureApiVersion') || '2024-06-01').trim() || '2024-06-01',
         defaultTargetLang: (cfg.get<string>('defaultTargetLang') || 'es').trim() || 'es'
     };
 }
 
-export function isAiConfigured(settings: AiSettings = getAiSettings()): boolean {
+export function isAiConfigured(settings: AiSettings): boolean {
     if (settings.provider === 'none') return false;
-    if (settings.provider === 'ollama') return true; // local, key optional
+    if (settings.provider === 'ollama') return true;
     return Boolean(settings.apiKey);
 }
 
@@ -41,23 +64,42 @@ function timeoutSignal(ms: number): AbortSignal {
     return c.signal;
 }
 
+const DEFAULT_HEADERS: Record<string, string> = {
+    'Accept': 'application/json',
+    'User-Agent': 'PDFDisplay-VSCode/0.0.23'
+};
+
 async function fetchJson(url: string, init?: RequestInit): Promise<any> {
-    const res = await fetch(url, init);
+    const headers = { ...DEFAULT_HEADERS, ...(init?.headers as Record<string, string> | undefined) };
+    const res = await fetch(url, { ...init, headers });
     const text = await res.text();
     let body: any = null;
     try { body = text ? JSON.parse(text) : null; } catch { body = text; }
     if (!res.ok) {
-        const detail = typeof body === 'string' ? body : (body?.error?.message || body?.message || text);
+        const detail = typeof body === 'string' ? body : (body?.title || body?.message || body?.error?.message || text);
         throw new Error(detail || `HTTP ${res.status}`);
     }
     return body;
 }
 
-/** Free open dictionary — no key required. */
-export async function defineFree(word: string): Promise<{ word: string; phonetic?: string; meanings: { partOfSpeech: string; definitions: string[] }[] }> {
-    const cleaned = word.replace(/[^\p{L}\p{N}'-]/gu, '').trim();
-    if (!cleaned) throw new Error('No word selected');
-    const url = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(cleaned.toLowerCase());
+/** Normalize a selection into a lookup word (handles PDF soft hyphens, punctuation). */
+export function cleanLookupWord(raw: string): string {
+    let w = String(raw || '')
+        .replace(/\u00ad/g, '') // soft hyphen
+        .replace(/[\u2018\u2019\u201A\uFF07]/g, "'")
+        .replace(/[\u201C\u201D]/g, '')
+        .trim();
+    // Prefer unicode letter class; fall back for older runtimes
+    try {
+        w = w.replace(/[^\p{L}\p{N}'-]/gu, '');
+    } catch {
+        w = w.replace(/[^a-zA-Z0-9'-]/g, '');
+    }
+    return w.trim();
+}
+
+async function defineFromDictionaryApi(word: string) {
+    const url = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word.toLowerCase());
     const data = await fetchJson(url, { signal: timeoutSignal(12000) });
     if (!Array.isArray(data) || !data[0]) throw new Error('No definition found');
     const entry = data[0];
@@ -67,10 +109,80 @@ export async function defineFree(word: string): Promise<{ word: string; phonetic
     })).filter((m: any) => m.definitions.length);
     if (!meanings.length) throw new Error('No definition found');
     return {
-        word: String(entry.word || cleaned),
-        phonetic: entry.phonetic || entry.phonetics?.find((p: any) => p.text)?.text,
+        word: String(entry.word || word),
+        phonetic: entry.phonetic || entry.phonetics?.find((p: any) => p.text)?.text as string | undefined,
         meanings
     };
+}
+
+function stripHtml(html: string): string {
+    return String(html || '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+async function defineFromWiktionary(word: string) {
+    const url = 'https://en.wiktionary.org/api/rest_v1/page/definition/' + encodeURIComponent(word.toLowerCase());
+    const data = await fetchJson(url, { signal: timeoutSignal(12000) });
+    // Shape: { en: [ { partOfSpeech, definitions: [ { definition: html } ] } ] }
+    const groups = data?.en;
+    if (!Array.isArray(groups) || !groups.length) throw new Error('No definition found');
+    const meanings = groups.slice(0, 4).map((g: any) => ({
+        partOfSpeech: String(g.partOfSpeech || ''),
+        definitions: (g.definitions || [])
+            .slice(0, 3)
+            .map((d: any) => stripHtml(d.definition || d))
+            .filter(Boolean)
+    })).filter((m: any) => m.definitions.length);
+    if (!meanings.length) throw new Error('No definition found');
+    return { word, meanings };
+}
+
+/** Free open dictionary — no key required (Dictionary API, then Wiktionary). */
+export async function defineFree(word: string): Promise<{
+    word: string;
+    phonetic?: string;
+    meanings: { partOfSpeech: string; definitions: string[] }[];
+    provider: string;
+}> {
+    const cleaned = cleanLookupWord(word);
+    if (!cleaned) throw new Error('No word selected');
+    if (cleaned.length > 48) throw new Error('Selection is too long for a free dictionary lookup');
+
+    const attempts = [cleaned, cleaned.toLowerCase()];
+    // simple plural/suffix fallbacks
+    if (/ies$/i.test(cleaned)) attempts.push(cleaned.replace(/ies$/i, 'y'));
+    if (/ses$/i.test(cleaned)) attempts.push(cleaned.replace(/es$/i, ''));
+    if (/s$/i.test(cleaned) && cleaned.length > 3) attempts.push(cleaned.replace(/s$/i, ''));
+    if (/ing$/i.test(cleaned) && cleaned.length > 5) attempts.push(cleaned.replace(/ing$/i, ''), cleaned.replace(/ing$/i, 'e'));
+    if (/ed$/i.test(cleaned) && cleaned.length > 4) attempts.push(cleaned.replace(/ed$/i, ''), cleaned.replace(/ed$/i, 'e'));
+
+    const tried = new Set<string>();
+    let lastErr: Error | undefined;
+    for (const w of attempts) {
+        const key = w.toLowerCase();
+        if (!key || tried.has(key)) continue;
+        tried.add(key);
+        try {
+            const r = await defineFromDictionaryApi(w);
+            return { ...r, provider: 'dictionaryapi' };
+        } catch (e: any) {
+            lastErr = e instanceof Error ? e : new Error(String(e));
+        }
+        try {
+            const r = await defineFromWiktionary(w);
+            return { ...r, provider: 'wiktionary' };
+        } catch (e: any) {
+            lastErr = e instanceof Error ? e : new Error(String(e));
+        }
+    }
+    throw lastErr || new Error('No definition found');
 }
 
 /** Free MyMemory translation — no key required (rate-limited). */
@@ -78,14 +190,11 @@ export async function translateFree(text: string, targetLang: string, sourceLang
     const q = text.trim();
     if (!q) throw new Error('No text to translate');
     if (q.length > 450) throw new Error('Selection too long for free translation (max ~450 chars). Configure an AI provider for longer text.');
-    const pair = `${sourceLang === 'auto' ? 'autodetect' : sourceLang}|${targetLang}`;
-    // MyMemory uses en|es style; autodetect is not official — use auto|xx via langpair when possible
     const langpair = sourceLang === 'auto' ? `en|${targetLang}` : `${sourceLang}|${targetLang}`;
     const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(q) + '&langpair=' + encodeURIComponent(langpair);
     const data = await fetchJson(url, { signal: timeoutSignal(15000) });
     const translated = data?.responseData?.translatedText;
     if (!translated) throw new Error(data?.responseDetails || 'Translation failed');
-    // If auto-detect failed quality, still return what we got
     return {
         translated: String(translated),
         detectedSource: data?.responseData?.detectedLanguage
@@ -135,16 +244,18 @@ async function chatComplete(settings: AiSettings, system: string, user: string):
         return String(text).trim();
     }
 
-    // OpenAI-compatible: openai, azure, ollama, grok, custom
     let url: string;
     const headers: Record<string, string> = { 'content-type': 'application/json' };
 
     if (provider === 'azure') {
-        if (!settings.baseUrl) throw new Error('Azure OpenAI requires pdfDisplay.ai.baseUrl (resource endpoint)');
-        // baseUrl should be full deployment chat URL or resource root
+        if (!settings.baseUrl) throw new Error('Azure OpenAI requires pdfDisplay.ai.baseUrl (e.g. https://YOUR_RESOURCE.openai.azure.com)');
+        if (!settings.model) throw new Error('Azure OpenAI requires pdfDisplay.ai.model (deployment name)');
+        const apiVersion = settings.azureApiVersion || '2024-06-01';
         url = settings.baseUrl.includes('/chat/completions')
-            ? settings.baseUrl
-            : `${settings.baseUrl}/openai/deployments/${encodeURIComponent(model)}/chat/completions?api-version=2024-06-01`;
+            ? (settings.baseUrl.includes('api-version=')
+                ? settings.baseUrl
+                : settings.baseUrl + (settings.baseUrl.includes('?') ? '&' : '?') + 'api-version=' + encodeURIComponent(apiVersion))
+            : `${settings.baseUrl}/openai/deployments/${encodeURIComponent(model)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
         headers['api-key'] = settings.apiKey;
     } else if (provider === 'ollama') {
         const base = settings.baseUrl || 'http://127.0.0.1:11434';
@@ -190,7 +301,7 @@ function defaultModel(provider: AiProvider): string {
 }
 
 export async function translateText(text: string, targetLang: string, sourceLang?: string): Promise<{ translated: string; provider: string }> {
-    const settings = getAiSettings();
+    const settings = await getAiSettings();
     if (isAiConfigured(settings)) {
         const translated = await chatComplete(
             settings,
@@ -208,39 +319,53 @@ export async function defineText(text: string): Promise<{
     phonetic?: string;
     meanings: { partOfSpeech: string; definitions: string[] }[];
     provider: string;
-    aiNote?: string;
 }> {
-    const cleaned = text.trim();
-    const isSingleWord = !/\s/.test(cleaned) && cleaned.length < 40;
-    const settings = getAiSettings();
+    const raw = text.trim();
+    if (!raw) throw new Error('No text selected');
 
-    if (isSingleWord) {
+    // Always try free dictionaries first for word-like selections (no API key needed)
+    const cleaned = cleanLookupWord(raw);
+    const wordLike = Boolean(cleaned) && cleaned.length <= 48 && !/\s/.test(cleaned);
+
+    if (wordLike) {
         try {
-            const free = await defineFree(cleaned);
-            return { ...free, provider: 'dictionaryapi' };
-        } catch (e) {
-            if (!isAiConfigured(settings)) throw e;
+            return await defineFree(cleaned);
+        } catch (freeErr: any) {
+            const settings = await getAiSettings();
+            if (!isAiConfigured(settings)) {
+                throw new Error(freeErr?.message || 'No definition found');
+            }
+            // fall through to AI for obscure words when configured
         }
     }
 
+    const settings = await getAiSettings();
     if (isAiConfigured(settings)) {
         const reply = await chatComplete(
             settings,
             'Explain the meaning of the selected word or phrase clearly and briefly. If it is a word, give part of speech and 1-3 short definitions. Plain text only.',
-            cleaned
+            raw
         );
         return {
-            word: cleaned,
+            word: cleaned || raw,
             meanings: [{ partOfSpeech: '', definitions: [reply] }],
             provider: settings.provider
         };
     }
 
-    if (isSingleWord) {
-        const free = await defineFree(cleaned);
-        return { ...free, provider: 'dictionaryapi' };
+    // Phrase without AI: define the longest word-like token
+    const tokens = raw.split(/\s+/).map(cleanLookupWord).filter(t => t.length > 2);
+    if (tokens.length) {
+        try {
+            return await defineFree(tokens[tokens.length - 1]);
+        } catch {
+            try {
+                return await defineFree(tokens[0]);
+            } catch { /* ignore */ }
+        }
     }
-    throw new Error('Configure an AI provider in Settings (pdfDisplay.ai) to define phrases. Single English words work without a key.');
+
+    throw new Error('No definition found. Select a single English word, or set an AI provider for phrases.');
 }
 
 export async function handleAiMessage(
@@ -250,7 +375,8 @@ export async function handleAiMessage(
     const requestId = msg.requestId;
     try {
         if (msg.type === 'ai-translate') {
-            const target = (msg.targetLang || getAiSettings().defaultTargetLang || 'es').toString();
+            const settings = await getAiSettings();
+            const target = (msg.targetLang || settings.defaultTargetLang || 'es').toString();
             const result = await translateText(String(msg.text || ''), target, msg.sourceLang);
             await post({ type: 'ai-translate-result', requestId, ok: true, ...result, targetLang: target });
             return;
@@ -261,11 +387,12 @@ export async function handleAiMessage(
             return;
         }
         if (msg.type === 'ai-status') {
-            const s = getAiSettings();
+            const s = await getAiSettings();
             await post({
                 type: 'ai-status-result',
                 requestId,
                 configured: isAiConfigured(s),
+                hasApiKey: Boolean(s.apiKey),
                 provider: s.provider,
                 model: s.model || defaultModel(s.provider),
                 defaultTargetLang: s.defaultTargetLang
@@ -279,4 +406,46 @@ export async function handleAiMessage(
             error: e?.message ?? String(e)
         });
     }
+}
+
+/** Register Set / Clear API Key commands (password input — key never shown in Settings UI). */
+export function registerAiKeyCommands(context: vscode.ExtensionContext): void {
+    initAiSecrets(context.secrets);
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('pdfDisplay.setAiApiKey', async () => {
+            const existing = await hasAiApiKey();
+            const key = await vscode.window.showInputBox({
+                title: 'PDF Display: AI API Key',
+                prompt: existing
+                    ? 'Enter a new API key (replaces the stored one). Leave empty to cancel.'
+                    : 'Enter your AI API key. It is stored in VS Code Secret Storage and never written to settings.json.',
+                password: true,
+                ignoreFocusOut: true,
+                placeHolder: existing ? '••••••••  (key already stored)' : 'sk-… / key…'
+            });
+            if (key === undefined) return; // cancelled
+            if (!key.trim()) {
+                vscode.window.showInformationMessage('PDF Display: API key unchanged.');
+                return;
+            }
+            await setAiApiKey(key);
+            vscode.window.showInformationMessage('PDF Display: API key saved securely.');
+        }),
+        vscode.commands.registerCommand('pdfDisplay.clearAiApiKey', async () => {
+            const existing = await hasAiApiKey();
+            if (!existing) {
+                vscode.window.showInformationMessage('PDF Display: no API key is stored.');
+                return;
+            }
+            const ok = await vscode.window.showWarningMessage(
+                'Remove the stored AI API key from Secret Storage?',
+                { modal: true },
+                'Remove'
+            );
+            if (ok !== 'Remove') return;
+            await setAiApiKey(undefined);
+            vscode.window.showInformationMessage('PDF Display: API key removed.');
+        })
+    );
 }

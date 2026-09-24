@@ -3,9 +3,10 @@ import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import * as path from 'path';
 import { PDFDocument, StandardFonts, rgb, PDFFont, BlendMode, LineCapStyle } from 'pdf-lib';
-import { handleAiMessage } from './ai';
+import { handleAiMessage, registerAiKeyCommands } from './ai';
 
 export function activate(context: vscode.ExtensionContext) {
+    registerAiKeyCommands(context);
     const provider = new PdfViewerProvider(context);
     context.subscriptions.push(vscode.window.registerCustomEditorProvider(
         PdfViewerProvider.viewType,
