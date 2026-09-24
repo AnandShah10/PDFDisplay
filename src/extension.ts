@@ -390,6 +390,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const markupCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'markup.css'));
         const aiJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'ai.js'));
         const aiCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'ai.css'));
+        const ragJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'rag.js'));
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3976,6 +3977,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
     </script>
     <script nonce="${nonce}" src="${markupJs}"></script>
+    <script nonce="${nonce}" src="${ragJs}"></script>
     <script nonce="${nonce}" src="${aiJs}"></script>
 </body>
 </html>`;

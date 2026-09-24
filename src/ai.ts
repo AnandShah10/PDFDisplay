@@ -416,29 +416,88 @@ export interface AssistContext {
     question?: string;
     meta?: string;
     history?: { role: 'user' | 'assistant'; content: string }[];
+    /** Sequential full-document batches for map-reduce (summary, keypoints, …). */
+    batches?: { text: string; meta?: string; pages?: number[] }[];
 }
 
-function truncateText(text: string, maxChars = 14000): string {
+const CONTEXT_CHAR_BUDGET = 16000;
+
+function packContext(text: string, maxChars = CONTEXT_CHAR_BUDGET): string {
     const t = text.trim();
     if (t.length <= maxChars) return t;
-    return t.slice(0, maxChars) + '\n\n[…truncated…]';
+    // Prefer keeping head + tail so conclusions are not always dropped
+    const head = Math.floor(maxChars * 0.72);
+    const tail = maxChars - head - 48;
+    return t.slice(0, head) + '\n\n[…middle omitted for context budget…]\n\n' + t.slice(-tail);
 }
 
-export async function runAssist(action: string, ctx: AssistContext): Promise<{ text: string; provider: string; action: string }> {
+async function mapReduceAssist(
+    settings: AiSettings,
+    action: string,
+    batches: { text: string; meta?: string }[],
+    question?: string
+): Promise<string> {
+    const mapSystem =
+        action === 'keypoints'
+            ? 'Extract the key points from this section of a PDF. Short bullets only. Plain text.'
+            : action === 'flashcards'
+            ? 'Create 3-6 flashcards (Q:/A:) from this section only. Plain text.'
+            : action === 'quiz'
+            ? 'Create 2-3 multiple-choice questions from this section. Mark the correct answer. Plain text.'
+            : 'Summarize this section of a PDF accurately and densely. Keep names, numbers, and claims. Plain text.';
+
+    const partials: string[] = [];
+    for (let i = 0; i < batches.length; i++) {
+        const b = batches[i];
+        const body = packContext(b.text || '', CONTEXT_CHAR_BUDGET);
+        if (!body.trim()) continue;
+        const user =
+            (b.meta ? `Section (${b.meta})\n\n` : `Section ${i + 1} of ${batches.length}\n\n`) + body;
+        const part = await chatComplete(settings, mapSystem, user);
+        partials.push(`### Part ${i + 1}${b.meta ? ' — ' + b.meta : ''}\n${part}`);
+    }
+    if (!partials.length) throw new Error('No extractable text in document batches.');
+
+    const reduceSystem =
+        action === 'keypoints'
+            ? 'Merge section key points into one deduplicated, ordered bullet list. Plain text only.'
+            : action === 'flashcards'
+            ? 'Merge flashcards from all sections. Deduplicate. Keep 8-12 best cards as Q:/A:. Plain text only.'
+            : action === 'quiz'
+            ? 'Build one coherent 5-question multiple-choice quiz from the section quizzes. Mark correct answers. Plain text only.'
+            : 'Synthesize a single coherent document summary from the section summaries. Preserve important details; remove repetition. Plain text only.';
+
+    const reduceUser =
+        (question ? `User focus: ${question}\n\n` : '') +
+        `Combine the following section results into the final answer:\n\n${partials.join('\n\n')}`;
+    return chatComplete(settings, reduceSystem, packContext(reduceUser, CONTEXT_CHAR_BUDGET * 1.5));
+}
+
+export async function runAssist(action: string, ctx: AssistContext): Promise<{ text: string; provider: string; action: string; passes?: number }> {
     const settings = await getAiSettings();
     if (!isAiConfigured(settings)) {
         throw new Error('Reading Assist needs an AI provider. Set pdfDisplay.ai.provider and run "PDF Display: Set AI API Key".');
     }
     const prompt = ASSIST_PROMPTS[action];
     if (!prompt) throw new Error('Unknown assist action: ' + action);
-    const text = truncateText(ctx.text || '');
-    if (!text && action !== 'chat') throw new Error('No document text available for this action.');
+
     if ((action === 'qa' || action === 'chat') && !(ctx.question || '').trim()) {
         throw new Error('Enter a question first.');
     }
+
+    // Full-document map-reduce when the webview sent sequential coverage batches
+    const mapReduceActions = new Set(['summary', 'chapter-summary', 'keypoints', 'flashcards', 'quiz']);
+    if (mapReduceActions.has(action) && Array.isArray(ctx.batches) && ctx.batches.length > 1) {
+        const out = await mapReduceAssist(settings, action, ctx.batches, ctx.question);
+        return { text: out, provider: settings.provider, action, passes: ctx.batches.length + 1 };
+    }
+
+    const text = packContext(ctx.text || '');
+    if (!text && action !== 'chat') throw new Error('No document text available for this action.');
     if (action === 'simplify' && text.length < 2) throw new Error('Select text to simplify, or run on the current page.');
+
     const out = await chatComplete(settings, prompt.system, prompt.user({ ...ctx, text }));
-    return { text: out, provider: settings.provider, action };
+    return { text: out, provider: settings.provider, action, passes: 1 };
 }
 
 export async function handleAiMessage(
@@ -464,7 +523,8 @@ export async function handleAiMessage(
                 text: String(msg.text || ''),
                 question: msg.question ? String(msg.question) : undefined,
                 meta: msg.meta ? String(msg.meta) : undefined,
-                history: Array.isArray(msg.history) ? msg.history : undefined
+                history: Array.isArray(msg.history) ? msg.history : undefined,
+                batches: Array.isArray(msg.batches) ? msg.batches : undefined
             });
             await post({ type: 'ai-assist-result', requestId, ok: true, ...result });
             return;

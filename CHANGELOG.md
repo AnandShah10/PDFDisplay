@@ -1,3 +1,6 @@
+## [0.0.27]
+- Reading Assist uses **full-document** indexing (all pages), BM25-lite retrieval, page-diverse packing, and map-reduce summarization — no 12-page truncation.
+
 ## [0.0.26]
 - Package metadata: author **Anand Shah**, expanded description, marketplace keywords and categories.
 - PDF editing commands exposed in the editor title menu (extract, split, merge, compress, bake annotations, export).

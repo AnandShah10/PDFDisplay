@@ -372,7 +372,7 @@
             '<div class="ai-scope">Scope <select id="ai-scope">' +
             '  <option value="page">Current page</option>' +
             '  <option value="selection">Selection</option>' +
-            '  <option value="doc">Whole document (truncated)</option>' +
+            '  <option value="doc">Whole document (smart retrieval)</option>' +
             '</select></div>' +
             '<div class="ai-actions-grid">' +
             '  <button type="button" data-act="summary">PDF summary</button>' +
@@ -407,31 +407,96 @@
         });
     }
 
-    async function gatherScopeText(action) {
+    async function gatherScopeText(action, question) {
         const host = window.__pdfDisplay;
-        if (!host) return { text: '', meta: '' };
+        if (!host) return { text: '', meta: '', batches: null };
         const scopeEl = document.getElementById('ai-scope');
         let scope = scopeEl ? scopeEl.value : 'page';
+        const rag = window.PdfRag;
+        const budget = (rag && rag.CONTEXT_BUDGET) || 16000;
+
         if (action === 'simplify') {
             const sel = host.selectionText ? host.selectionText() : '';
-            if (sel) return { text: sel, meta: 'selected text' };
+            if (sel) return { text: sel, meta: 'selected text', batches: null };
             scope = 'page';
         }
         if (scope === 'selection') {
             const sel = host.selectionText ? host.selectionText() : '';
             if (!sel) throw new Error('Select text in the PDF first, or change scope to Current page.');
-            return { text: sel, meta: 'selected text' };
+            return { text: sel, meta: 'selected text', batches: null };
         }
-        if (scope === 'doc') {
-            const total = host.totalPages || 1;
-            const maxPages = Math.min(total, 12);
-            const text = await host.pagesTextPlain(1, maxPages);
-            return { text: text, meta: host.fileName + ' · pages 1–' + maxPages + (total > maxPages ? ' (truncated)' : '') };
+
+        // Build full-document index (all pages, chunked) — no 12-page truncation
+        if (rag && typeof rag.buildIndex === 'function') {
+            setAssistOut('<p class="ai-muted">Indexing document for precise retrieval…</p>');
+            await rag.buildIndex(host, function (done, total) {
+                setAssistOut('<p class="ai-muted">Indexing… ' + done + ' / ' + total + ' pages</p>');
+            });
         }
-        // page
-        const page = host.currentPage || 1;
-        const text = await host.pageTextPlain(page);
-        return { text: text, meta: (host.fileName || 'PDF') + ' · page ' + page };
+
+        if (scope === 'page') {
+            const page = host.currentPage || 1;
+            if (rag && rag.retrieveForPages) {
+                const hit = rag.retrieveForPages(page, page, question || '', budget);
+                if (hit.text) {
+                    return {
+                        text: hit.text,
+                        meta: (host.fileName || 'PDF') + ' · page ' + page + ' · ' + hit.chunkCount + ' passages',
+                        batches: null
+                    };
+                }
+            }
+            const text = await host.pageTextPlain(page);
+            return { text: text, meta: (host.fileName || 'PDF') + ' · page ' + page, batches: null };
+        }
+
+        // scope === 'doc' — full document via retrieval / map-reduce batches
+        const needsQuery = action === 'qa' || action === 'chat' || action === 'citation';
+        const coverageActions = { summary: 1, 'chapter-summary': 1, keypoints: 1, flashcards: 1, quiz: 1 };
+
+        if (rag) {
+            if (needsQuery && question) {
+                const hit = rag.retrieveForQuery(question, budget);
+                return {
+                    text: hit.text,
+                    meta: (host.fileName || 'PDF') + ' · ' + hit.meta,
+                    batches: null,
+                    retrieval: 'bm25'
+                };
+            }
+            // Map-reduce for whole-doc synthesis actions when index is large
+            if (coverageActions[action] && rag.coverageBatches) {
+                const batches = rag.coverageBatches(budget);
+                if (batches.length > 1) {
+                    return {
+                        text: batches[0].text,
+                        meta: (host.fileName || 'PDF') + ' · map-reduce · ' + batches.length + ' batches · full document',
+                        batches: batches,
+                        retrieval: 'map-reduce'
+                    };
+                }
+                if (batches.length === 1) {
+                    return {
+                        text: batches[0].text,
+                        meta: (host.fileName || 'PDF') + ' · full document · ' + (rag.getIndexStats() || {}).chunkCount + ' chunks',
+                        batches: null,
+                        retrieval: 'full'
+                    };
+                }
+            }
+            const hit = rag.retrieveForCoverage(budget, 'full document');
+            return {
+                text: hit.text,
+                meta: (host.fileName || 'PDF') + ' · ' + hit.meta,
+                batches: null,
+                retrieval: 'coverage'
+            };
+        }
+
+        // Fallback without rag.js
+        const total = host.totalPages || 1;
+        const text = await host.pagesTextPlain(1, total);
+        return { text: text, meta: (host.fileName || 'PDF') + ' · all ' + total + ' pages', batches: null };
     }
 
     function setAssistOut(html) {
@@ -463,17 +528,25 @@
         setAssistBusy(true);
         setAssistOut('<p class="ai-muted">Working…</p>');
         try {
-            const gathered = await gatherScopeText(action);
+            const gathered = await gatherScopeText(action, question);
             const payload = {
                 action: action,
                 text: gathered.text,
                 meta: gathered.meta,
                 question: question || undefined,
-                history: action === 'chat' ? chatHistory.slice(-6) : undefined
+                history: action === 'chat' ? chatHistory.slice(-6) : undefined,
+                batches: gathered.batches || undefined
             };
+            setAssistOut('<p class="ai-muted">Generating…' + (gathered.batches && gathered.batches.length > 1
+                ? ' (full-document map-reduce, ' + gathered.batches.length + ' passes)'
+                : '') + '</p>');
             const res = await request('ai-assist', payload);
             const body = escapeHtml(res.text || '');
-            setAssistOut('<div class="ai-muted" style="margin-bottom:8px">' + escapeHtml(res.provider || '') + (gathered.meta ? ' · ' + escapeHtml(gathered.meta) : '') + '</div><div>' + body + '</div>');
+            setAssistOut('<div class="ai-muted" style="margin-bottom:8px">' +
+                escapeHtml(res.provider || '') +
+                (gathered.meta ? ' · ' + escapeHtml(gathered.meta) : '') +
+                (res.passes ? ' · ' + res.passes + ' passes' : '') +
+                '</div><div>' + body + '</div>');
             if (action === 'chat' || action === 'qa') {
                 if (question) chatHistory.push({ role: 'user', content: question });
                 chatHistory.push({ role: 'assistant', content: res.text || '' });
