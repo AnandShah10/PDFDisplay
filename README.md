@@ -2,7 +2,7 @@
 
 # 📄 PDF Display for VS Code
 
-**A fast, fully-featured, and clean PDF viewer directly within Visual Studio Code — now with Git integration, PDF toolkit, and diffing.**
+**A fast, fully-featured, and clean PDF viewer directly within Visual Studio Code.**
 
 [![Visual Studio Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098FF?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=AnandShah.pdfdisplay)
 [![Stars](https://img.shields.io/github/stars/AnandShah10/PDFDisplay?style=social)](https://github.com/AnandShah10/PDFDisplay/stargazers)
@@ -34,7 +34,7 @@ Powered by `pdf.js` + `pdf-lib`, it includes professional tools, annotation supp
 - **🧠 Smart State Restoration**: Reopens exactly where you left off (page, zoom, view mode, contrast).
 
 ### Annotations & Export
-- **📌 Sticky Notes**: Add draggable annotations directly on pages. Persisted in VS Code global state *and* a git-trackable `.annotations.json` sidecar (when inside a workspace).
+- **Markup tools**: Highlight, underline, strikeout, ink, pencil, eraser, sticky notes, typed comments, rectangle / circle / arrow, and a signature stamp. Color, opacity, and undo/redo live on a floating rail. Marks persist in VS Code global state *and* a git-trackable `.annotations.json` sidecar.
 - **📤 Export Options**:
   - Bake annotations into a new PDF (visible pins + wrapped text callouts via pdf-lib).
   - Export annotations as JSON.
@@ -119,8 +119,10 @@ All features are available in the Command Palette under the `PDF Display:` prefi
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
+We welcome contributions! Whether it's a bug report, feature request, or a pull request, your input helps make this extension better for everyone.
+
+Check out our [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details on how to set up the project locally and contribute.
 
 ## 📄 License
 
-[MIT License](LICENSE)
+This project is open-source and licensed under the [MIT License](LICENSE).

@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -71,6 +71,16 @@
         "command": "pdfDisplay.toggleAnnotate",
         "title": "PDF Display: Add Sticky Note",
         "icon": "$(note)"
+      },
+      {
+        "command": "pdfDisplay.undoMarkup",
+        "title": "PDF Display: Undo Markup",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "pdfDisplay.redoMarkup",
+        "title": "PDF Display: Redo Markup",
+        "icon": "$(redo)"
       },
       {
         "command": "pdfDisplay.toggleBookmarks",
@@ -188,6 +198,24 @@
         "command": "pdfDisplay.find",
         "key": "ctrl+f",
         "mac": "cmd+f",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.undoMarkup",
+        "key": "ctrl+z",
+        "mac": "cmd+z",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.redoMarkup",
+        "key": "ctrl+shift+z",
+        "mac": "cmd+shift+z",
+        "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
+      },
+      {
+        "command": "pdfDisplay.redoMarkup",
+        "key": "ctrl+y",
+        "mac": "cmd+y",
         "when": "activeCustomEditorId == 'pdfDisplay.pdfViewer'"
       },
       {

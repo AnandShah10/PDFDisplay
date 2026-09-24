@@ -2,6 +2,11 @@
 
 All notable changes to the "PDFDisplay" extension will be documented in this file.
 
+## [0.0.22]
+- Full page markup: highlight, underline, strikeout, ink, pencil, eraser, sticky notes, text comments, rectangle, circle, arrow, and signature stamp.
+- Color picker, opacity, stroke width, and undo/redo (`Ctrl/Cmd+Z`) on the floating markup rail.
+- Annotated PDF export now bakes every markup kind (not just sticky notes). Existing `.annotations.json` sticky notes still load.
+
 ## [0.0.21]
 - Updated README.md with complete feature list, expanded shortcuts table (now covering Git, Diff, PDF toolkit, view modes, Tools bar, image export, etc.), and improved documentation.
 - Version bump and minor packaging updates (package.json now at 0.0.21).

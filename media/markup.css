@@ -1,0 +1,431 @@
+/* PDFDisplay markup bar — horizontal, uncluttered, theme-aware */
+
+#markup-bar {
+    position: fixed;
+    top: 48px;
+    left: 0;
+    right: 0;
+    height: 44px;
+    z-index: 98;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 12px;
+    box-sizing: border-box;
+    background: var(--vscode-editorWidget-background, var(--toolbar-bg, #2d2d30));
+    border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+}
+
+#markup-bar.hidden,
+#markup-bar.collapsed {
+    display: none;
+}
+
+body.tools-bar-open #markup-bar {
+    top: 92px;
+}
+
+#markup-bar .mk-collapse {
+    opacity: 0.75;
+}
+#markup-bar .mk-collapse:hover {
+    opacity: 1;
+}
+
+/* Collapsed: small reopen chip under the main toolbar */
+#markup-tab {
+    position: fixed;
+    top: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 98;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 12px 0 8px;
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+    border-radius: 999px;
+    background: var(--vscode-editorWidget-background, var(--toolbar-bg, #2d2d30));
+    color: var(--text-color, #e0e0e0);
+    font-size: 12px;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+#markup-tab.hidden {
+    display: none;
+}
+#markup-tab svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+#markup-tab:hover {
+    background: var(--hover-bg, rgba(255, 255, 255, 0.1));
+}
+body.tools-bar-open #markup-tab {
+    top: 100px;
+}
+
+/* Push page content below the markup bar */
+body.markup-bar-open #content {
+    margin-top: 92px;
+    height: calc(100vh - 92px);
+}
+body.markup-bar-open #reading-progress {
+    top: 92px;
+}
+body.markup-bar-open #loading-overlay {
+    top: 92px;
+}
+body.tools-bar-open.markup-bar-open #content {
+    margin-top: 136px;
+    height: calc(100vh - 136px);
+}
+body.tools-bar-open.markup-bar-open #reading-progress {
+    top: 136px;
+}
+body.tools-bar-open.markup-bar-open #loading-overlay {
+    top: 136px;
+}
+
+#markup-bar .mk-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+#markup-bar .mk-sep {
+    width: 1px;
+    height: 22px;
+    margin: 0 8px;
+    background: var(--border-color, rgba(255, 255, 255, 0.12));
+    flex-shrink: 0;
+}
+
+#markup-bar .mk-spacer {
+    flex: 1;
+    min-width: 8px;
+}
+
+#markup-bar .mk-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-color, #e0e0e0);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+#markup-bar .mk-btn svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#markup-bar .mk-btn:hover {
+    background: var(--hover-bg, rgba(255, 255, 255, 0.1));
+}
+
+#markup-bar .mk-btn.active {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+}
+
+#markup-bar .mk-btn:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder, #007acc);
+    outline-offset: 1px;
+}
+
+/* Color chip row */
+#markup-bar .mk-swatches {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 4px;
+}
+
+#markup-bar .mk-swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    padding: 0;
+    box-sizing: border-box;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+    transition: transform 0.1s ease;
+}
+
+#markup-bar .mk-swatch:hover {
+    transform: scale(1.15);
+}
+
+#markup-bar .mk-swatch.active {
+    border-color: var(--vscode-focusBorder, #007acc);
+    box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
+}
+
+#markup-bar .mk-color {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.2));
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+#markup-bar .mk-color::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+#markup-bar .mk-color::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
+/* Compact property controls */
+#markup-bar .mk-prop {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px;
+    flex-shrink: 0;
+    color: var(--muted-text-color, #9d9d9d);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+#markup-bar .mk-prop input[type="range"] {
+    width: 72px;
+    height: 4px;
+    accent-color: var(--accent-color, #007acc);
+    cursor: pointer;
+}
+
+#markup-bar .mk-prop-val {
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-color, #ccc);
+    font-size: 11px;
+}
+
+/* Hint chip under the bar, non-blocking */
+#markup-hint {
+    position: fixed;
+    top: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 97;
+    padding: 5px 14px;
+    border-radius: 999px;
+    font-size: 12px;
+    letter-spacing: 0.01em;
+    color: var(--muted-text-color, #b0b0b0);
+    background: var(--vscode-editorWidget-background, rgba(45, 45, 48, 0.95));
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    white-space: nowrap;
+    max-width: min(90vw, 420px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#markup-hint.visible {
+    opacity: 1;
+}
+
+body.tools-bar-open #markup-hint {
+    top: 144px;
+}
+
+body.markup-bar-open #markup-hint {
+    top: 100px;
+}
+
+body.tools-bar-open.markup-bar-open #markup-hint {
+    top: 144px;
+}
+
+/* Page overlays */
+.markup-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+}
+
+.markup-layer svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+}
+
+.markup-catcher {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    touch-action: none;
+    pointer-events: auto;
+    cursor: crosshair;
+}
+
+.markup-catcher.is-text {
+    pointer-events: none !important;
+    cursor: text;
+}
+
+.markup-catcher.is-draw {
+    cursor: crosshair;
+}
+
+body.markup-drawing .link-layer {
+    pointer-events: none !important;
+}
+
+.markup-note {
+    position: absolute;
+    z-index: 7;
+    width: 180px;
+    min-height: 96px;
+    padding: 10px 12px;
+    border-radius: 2px 10px 10px 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+    color: #1c1c1e;
+    font-size: 12.5px;
+    line-height: 1.45;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+.markup-note.selected,
+.markup-text.selected,
+.markup-sign.selected {
+    outline: 2px solid var(--vscode-focusBorder, #007acc);
+    outline-offset: 1px;
+}
+
+.markup-note textarea,
+.markup-text textarea {
+    width: 100%;
+    min-height: 76px;
+    border: none;
+    resize: vertical;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    outline: none;
+    pointer-events: auto;
+}
+
+.markup-text {
+    position: absolute;
+    z-index: 7;
+    min-width: 80px;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+.markup-text p,
+.markup-note p {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.markup-sign {
+    position: absolute;
+    z-index: 7;
+    object-fit: contain;
+    pointer-events: none;
+}
+
+/* Signature modal */
+#markup-sig-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 600;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+}
+
+#markup-sig-modal.hidden {
+    display: none;
+}
+
+#markup-sig-modal .mk-dialog {
+    width: min(440px, calc(100vw - 32px));
+    background: var(--vscode-editorWidget-background, var(--toolbar-bg, #252526));
+    color: var(--text-color, #fff);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 10px;
+    padding: 18px 20px;
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+}
+
+#markup-sig-modal h2 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+#markup-sig-modal p {
+    margin: 0 0 14px;
+    font-size: 12px;
+    color: var(--muted-text-color, #aaa);
+}
+
+#markup-sig-modal canvas {
+    width: 100%;
+    height: 148px;
+    background: #f7f4ed;
+    border-radius: 6px;
+    cursor: crosshair;
+    display: block;
+}
+
+#markup-sig-modal .mk-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+#markup-sig-modal .mk-actions button {
+    min-width: 72px;
+}
+
+body.markup-drawing .text-layer {
+    pointer-events: none !important;
+}

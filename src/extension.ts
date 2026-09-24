@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import * as path from 'path';
-import { PDFDocument, StandardFonts, rgb, PDFFont } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFFont, BlendMode, LineCapStyle } from 'pdf-lib';
 
 export function activate(context: vscode.ExtensionContext) {
     const provider = new PdfViewerProvider(context);
@@ -60,6 +60,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('pdfDisplay.find', () => postToActivePanel('open-search')),
         vscode.commands.registerCommand('pdfDisplay.toggleSidebar', () => postToActivePanel('toggle-sidebar')),
         vscode.commands.registerCommand('pdfDisplay.toggleAnnotate', () => postToActivePanel('toggle-annotate')),
+        vscode.commands.registerCommand('pdfDisplay.undoMarkup', () => postToActivePanel('undo-markup')),
+        vscode.commands.registerCommand('pdfDisplay.redoMarkup', () => postToActivePanel('redo-markup')),
         vscode.commands.registerCommand('pdfDisplay.toggleBookmarks', () => postToActivePanel('toggle-bookmarks')),
         vscode.commands.registerCommand('pdfDisplay.bookmarkCurrentPage', () => postToActivePanel('bookmark-current-page')),
         vscode.commands.registerCommand('pdfDisplay.toggleToc', () => postToActivePanel('toggle-toc')),
@@ -161,7 +163,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     ): Promise<void> {
         webviewPanel.webview.options = {
             enableScripts: true,
-            localResourceRoots: []
+            localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]
         };
 
         const fileName = escapeHtml(vscode.workspace.asRelativePath(document.uri, false).split(/[\\/]/).pop() ?? 'document.pdf');
@@ -378,14 +380,17 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     }
 
     private getHtmlForWebview(webview: vscode.Webview, fileName: string, nonce: string): string {
+        const markupJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'markup.js'));
+        const markupCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'markup.css'));
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https://cdnjs.cloudflare.com; style-src 'nonce-${nonce}'; img-src data:; connect-src https://cdnjs.cloudflare.com; child-src blob:; worker-src blob: https://cdnjs.cloudflare.com;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource} https://cdnjs.cloudflare.com; style-src 'nonce-${nonce}' ${webview.cspSource}; img-src data: ${webview.cspSource}; connect-src https://cdnjs.cloudflare.com; child-src blob:; worker-src blob: https://cdnjs.cloudflare.com;">
     <title>PDF Viewer - ${fileName}</title>
     <script nonce="${nonce}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="${markupCss}">
     <style nonce="${nonce}">
         :root {
             /* VS Code injects --vscode-* custom properties into every webview and
@@ -2851,6 +2856,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // pattern as the text layer - pins are positioned from a page-relative
         // ratio so they land correctly at any scale.
         function buildAnnotationLayer(pageContainer, pageNum, viewport) {
+            if (window.PdfMarkup && typeof window.PdfMarkup.renderPage === 'function') {
+                window.PdfMarkup.renderPage(pageContainer, pageNum);
+                return;
+            }
             const layer = document.createElement('div');
             layer.className = 'annotation-layer';
             annotations
@@ -3055,6 +3064,10 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         function setAnnotateMode(value) {
             annotateMode = value;
+            if (window.PdfMarkup && typeof window.PdfMarkup.setTool === 'function') {
+                window.PdfMarkup.setTool(value ? 'sticky' : 'select');
+                return;
+            }
             toggleAnnotateBtn.classList.toggle('active', value);
             container.classList.toggle('annotate-cursor', value);
         }
@@ -3808,6 +3821,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'open-search': openSearch(); break;
                 case 'toggle-sidebar': toggleSidebarBtn.click(); break;
                 case 'toggle-annotate': setAnnotateMode(!annotateMode); break;
+                case 'undo-markup': if (window.PdfMarkup) window.PdfMarkup.undo(); break;
+                case 'redo-markup': if (window.PdfMarkup) window.PdfMarkup.redo(); break;
                 case 'toggle-bookmarks': toggleBookmarksBtn.click(); break;
                 case 'bookmark-current-page': bookmarkToggleCurrentBtn.click(); break;
                 case 'toggle-toc': toggleTocBtn.click(); break;
@@ -3836,6 +3851,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             if (msg.type === 'pdf-data') {
                 pdfDataReceived = true;
                 annotations = Array.isArray(msg.annotations) ? msg.annotations : [];
+                if (window.PdfMarkup && typeof window.PdfMarkup.renderAll === 'function') {
+                    window.PdfMarkup.renderAll();
+                }
                 bookmarks = Array.isArray(msg.bookmarks) ? msg.bookmarks : [];
                 pendingViewState = (msg.viewState && typeof msg.viewState === 'object') ? msg.viewState : null;
                 debugLog('received pdf-data, viewState=', pendingViewState);
@@ -3877,6 +3895,17 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         // (only if pdf.js itself actually loaded - no point fetching data
         // we can't render, and showError() has already fired above otherwise).
         let pdfDataReceived = false;
+        window.__pdfDisplay = {
+            get annotations() { return annotations; },
+            setAnnotations: function (next, silent) {
+                annotations = Array.isArray(next) ? next : [];
+                if (!silent) persistAnnotations();
+            },
+            persistAnnotations: persistAnnotations,
+            createAnnotationId: createAnnotationId,
+            get container() { return container; }
+        };
+
         if (pdfjsLib) {
             vscodeApi.postMessage({ type: 'ready' });
 
@@ -3890,6 +3919,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             }, 8000);
         }
     </script>
+    <script nonce="${nonce}" src="${markupJs}"></script>
 </body>
 </html>`;
     }
@@ -4197,20 +4227,50 @@ async function resolveAndOpenLinkedFile(currentUri: vscode.Uri, rawTarget: strin
 
 interface StoredAnnotation {
     id?: string;
+    kind?: string;
     pageNum: number;
-    xRatio: number;
-    yRatio: number;
-    text: string;
+    xRatio?: number;
+    yRatio?: number;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+    x1?: number;
+    y1?: number;
+    x2?: number;
+    y2?: number;
+    text?: string;
+    quote?: string;
+    color?: string;
+    opacity?: number;
+    width?: number;
+    fontSize?: number;
+    src?: string;
+    points?: { x: number; y: number }[];
+    rects?: { x: number; y: number; w: number; h: number }[];
     createdAt?: number;
 }
 
 function isStoredAnnotation(value: unknown): value is StoredAnnotation {
     if (!value || typeof value !== 'object') return false;
     const rec = value as Record<string, unknown>;
-    return typeof rec.pageNum === 'number'
-        && typeof rec.xRatio === 'number'
+    if (typeof rec.pageNum !== 'number') return false;
+    if (typeof rec.kind === 'string') return true;
+    return typeof rec.xRatio === 'number'
         && typeof rec.yRatio === 'number'
         && typeof rec.text === 'string';
+}
+
+function hexToPdfRgb(hex: string | undefined) {
+    const h = (hex || '#1c1c1e').replace('#', '').trim();
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const n = Number.parseInt(full.slice(0, 6), 16);
+    if (!Number.isFinite(n)) return rgb(0.11, 0.11, 0.12);
+    return rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+}
+
+function winAnsi(text: string) {
+    return text.replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
 }
 
 function wrapTextForPdf(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
@@ -4573,38 +4633,170 @@ async function promptExportImagesSetup(uri: vscode.Uri, totalPages: number): Pro
 async function bakeAnnotationsOntoDoc(pdfDoc: PDFDocument, annotations: StoredAnnotation[]): Promise<void> {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const pages = pdfDoc.getPages();
-    const FONT_SIZE = 9;
-    const PIN_RADIUS = 6;
-    const MAX_TEXT_WIDTH = 220;
-    const MAX_TEXT_LENGTH = 400; // keep a very long note from producing a huge label block
 
     for (const ann of annotations) {
         const pageIndex = ann.pageNum - 1;
-        if (pageIndex < 0 || pageIndex >= pages.length) continue; // stale annotation, e.g. from a differently-paginated version of the file
-
+        if (pageIndex < 0 || pageIndex >= pages.length) continue;
         const page = pages[pageIndex];
         const { width, height } = page.getSize();
-        // Stored ratios are relative to a top-left origin (screen coordinates);
-        // PDF space has a bottom-left origin, so the Y axis needs flipping.
-        const x = ann.xRatio * width;
-        const y = height - (ann.yRatio * height);
+        const kind = ann.kind || 'sticky';
+        const c = hexToPdfRgb(ann.color);
+        const op = Math.max(0.08, Math.min(1, ann.opacity ?? 1));
+        const toPdf = (x: number, y: number) => ({ x: x * width, y: height - y * height });
 
+        if (kind === 'highlight' && ann.rects) {
+            for (const r of ann.rects) {
+                page.drawRectangle({
+                    x: r.x * width,
+                    y: height - (r.y + r.h) * height,
+                    width: r.w * width,
+                    height: r.h * height,
+                    color: c,
+                    opacity: op,
+                    blendMode: BlendMode.Multiply
+                });
+            }
+            continue;
+        }
+
+        if ((kind === 'underline' || kind === 'strikeout') && ann.rects) {
+            for (const r of ann.rects) {
+                const yRatio = kind === 'underline' ? r.y + r.h * 0.88 : r.y + r.h * 0.5;
+                page.drawLine({
+                    start: toPdf(r.x, yRatio),
+                    end: toPdf(r.x + r.w, yRatio),
+                    thickness: Math.max(1, r.h * height * 0.08),
+                    color: c,
+                    opacity: op,
+                    lineCap: LineCapStyle.Round
+                });
+            }
+            continue;
+        }
+
+        if ((kind === 'ink' || kind === 'pencil') && ann.points && ann.points.length > 1) {
+            const startPt = toPdf(ann.points[0].x, ann.points[0].y);
+            let d = `M ${startPt.x.toFixed(2)} ${startPt.y.toFixed(2)}`;
+            for (let i = 1; i < ann.points.length; i++) {
+                const pt = toPdf(ann.points[i].x, ann.points[i].y);
+                d += ` L ${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`;
+            }
+            page.drawSvgPath(d, {
+                borderColor: c,
+                borderOpacity: op,
+                borderWidth: ann.width || 2,
+                borderLineCap: LineCapStyle.Round
+            });
+            continue;
+        }
+
+        if (kind === 'rect' && typeof ann.x === 'number' && typeof ann.y === 'number') {
+            page.drawRectangle({
+                x: ann.x * width,
+                y: height - ((ann.y + (ann.h || 0)) * height),
+                width: (ann.w || 0) * width,
+                height: (ann.h || 0) * height,
+                borderColor: c,
+                borderOpacity: op,
+                borderWidth: ann.width || 2
+            });
+            continue;
+        }
+
+        if (kind === 'ellipse' && typeof ann.x === 'number' && typeof ann.y === 'number') {
+            page.drawEllipse({
+                x: (ann.x + (ann.w || 0) / 2) * width,
+                y: height - ((ann.y + (ann.h || 0) / 2) * height),
+                xScale: ((ann.w || 0) / 2) * width,
+                yScale: ((ann.h || 0) / 2) * height,
+                borderColor: c,
+                borderOpacity: op,
+                borderWidth: ann.width || 2
+            });
+            continue;
+        }
+
+        if (kind === 'arrow' && typeof ann.x1 === 'number') {
+            const a = toPdf(ann.x1, ann.y1 || 0);
+            const b = toPdf(ann.x2 || 0, ann.y2 || 0);
+            page.drawLine({
+                start: a,
+                end: b,
+                thickness: ann.width || 2,
+                color: c,
+                opacity: op,
+                lineCap: LineCapStyle.Round
+            });
+            const angle = Math.atan2(b.y - a.y, b.x - a.x);
+            const size = 10 + (ann.width || 2);
+            const p2 = { x: b.x + Math.cos(angle + Math.PI * 0.82) * size, y: b.y + Math.sin(angle + Math.PI * 0.82) * size };
+            const p3 = { x: b.x + Math.cos(angle - Math.PI * 0.82) * size, y: b.y + Math.sin(angle - Math.PI * 0.82) * size };
+            page.drawSvgPath(`M ${b.x} ${b.y} L ${p2.x} ${p2.y} L ${p3.x} ${p3.y} Z`, { color: c, opacity: op });
+            continue;
+        }
+
+        if (kind === 'text' && typeof ann.x === 'number' && ann.text) {
+            const size = Math.max(8, ann.fontSize || 12);
+            const y = ann.y ?? 0;
+            const lines = wrapTextForPdf(winAnsi(ann.text), font, size, Math.max(20, (ann.w || 0.3) * width));
+            let ty = height - (y * height) - size;
+            const minY = height - ((y + (ann.h || 0.2)) * height);
+            for (const line of lines) {
+                if (ty < minY) break;
+                page.drawText(line, { x: ann.x * width, y: ty, size, font, color: c, opacity: op });
+                ty -= size * 1.25;
+            }
+            continue;
+        }
+
+        if (kind === 'signature' && ann.src && typeof ann.x === 'number') {
+            try {
+                const raw = ann.src.split(',')[1];
+                if (raw) {
+                    const imgBytes = Uint8Array.from(Buffer.from(raw, 'base64'));
+                    const img = ann.src.startsWith('data:image/jpeg')
+                        ? await pdfDoc.embedJpg(imgBytes)
+                        : await pdfDoc.embedPng(imgBytes);
+                    const y = ann.y ?? 0;
+                    page.drawImage(img, {
+                        x: ann.x * width,
+                        y: height - ((y + (ann.h || 0.1)) * height),
+                        width: (ann.w || 0.28) * width,
+                        height: (ann.h || 0.1) * height,
+                        opacity: op
+                    });
+                    continue;
+                }
+            } catch {
+                // skip bad signature payload
+            }
+            continue;
+        }
+
+        // Sticky notes (kind:sticky and legacy {xRatio,yRatio,text})
+        const xRatio = ann.x ?? ann.xRatio ?? 0;
+        const yRatio = ann.y ?? ann.yRatio ?? 0;
+        const x = xRatio * width;
+        const y = height - (yRatio * height);
+        const FONT_SIZE = 9;
+        const PIN_RADIUS = 6;
+        const MAX_TEXT_WIDTH = 220;
+        const MAX_TEXT_LENGTH = 400;
         page.drawCircle({
             x, y,
             size: PIN_RADIUS,
-            color: rgb(1, 0.85, 0.2),
+            color: c,
             borderColor: rgb(0.55, 0.4, 0),
             borderWidth: 1
         });
-
-        const text = ann.text.length > MAX_TEXT_LENGTH ? ann.text.slice(0, MAX_TEXT_LENGTH) + '…' : ann.text;
-        const lines = wrapTextForPdf(text, font, FONT_SIZE, MAX_TEXT_WIDTH);
+        const rawText = String(ann.text || '');
+        const text = rawText.length > MAX_TEXT_LENGTH ? rawText.slice(0, MAX_TEXT_LENGTH) + '…' : rawText;
+        const lines = wrapTextForPdf(winAnsi(text), font, FONT_SIZE, MAX_TEXT_WIDTH);
         const lineHeight = FONT_SIZE * 1.3;
         const boxHeight = lines.length * lineHeight + 8;
         const boxWidth = MAX_TEXT_WIDTH + 12;
         const boxX = Math.min(x + PIN_RADIUS + 4, width - boxWidth - 4);
         const boxY = Math.max(y - boxHeight, 4);
-
         page.drawRectangle({
             x: boxX,
             y: boxY,
@@ -4615,7 +4807,6 @@ async function bakeAnnotationsOntoDoc(pdfDoc: PDFDocument, annotations: StoredAn
             borderWidth: 0.75,
             opacity: 0.95
         });
-
         lines.forEach((line, i) => {
             page.drawText(line, {
                 x: boxX + 6,
@@ -4632,7 +4823,7 @@ async function exportAnnotatedPdf(context: vscode.ExtensionContext, uri: vscode.
     const annotations = getStoredAnnotations(context, uri).filter(isStoredAnnotation);
 
     if (annotations.length === 0) {
-        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to bake into this PDF.');
+        vscode.window.showInformationMessage('pdfDisplay: no annotations to bake into this PDF.');
         return;
     }
 
@@ -4689,7 +4880,7 @@ async function mergeAnnotationsIntoPdf(context: vscode.ExtensionContext, uri: vs
     const effective = (sidecarAnnotations ?? getStoredAnnotations(context, uri)).filter(isStoredAnnotation);
 
     if (effective.length === 0) {
-        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to merge into this PDF.');
+        vscode.window.showInformationMessage('pdfDisplay: no annotations to merge into this PDF.');
         return false;
     }
 
@@ -4736,7 +4927,7 @@ async function mergeAnnotationsIntoPdf(context: vscode.ExtensionContext, uri: vs
 async function exportAnnotationsJson(context: vscode.ExtensionContext, uri: vscode.Uri): Promise<void> {
     const annotations = getStoredAnnotations(context, uri);
     if (!annotations || annotations.length === 0) {
-        vscode.window.showInformationMessage('pdfDisplay: no sticky notes to export for this PDF.');
+        vscode.window.showInformationMessage('pdfDisplay: no annotations to export for this PDF.');
         return;
     }
 
