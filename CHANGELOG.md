@@ -1,3 +1,7 @@
+## [0.0.25]
+- Reading Assist (summary, chapter summary, Q&A, simplify, flashcards, quiz, key points, citations, chatbot).
+- UI stays clean: panel + floating **AI Assist** chip only appear when `pdfDisplay.ai.enableAssist` is true (and AI provider is configured for generation).
+
 ## [0.0.24]
 - API key stored in VS Code **Secret Storage** (Command Palette → Set / Clear AI API Key); no longer visible in Settings.
 - Azure OpenAI: new `pdfDisplay.ai.azureApiVersion` setting (default `2024-06-01`).

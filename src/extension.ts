@@ -231,7 +231,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             } else if (msg?.type === 'save-bookmarks') {
                 storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
-            } else if (msg?.type === 'ai-translate' || msg?.type === 'ai-define' || msg?.type === 'ai-status') {
+            } else if (msg?.type === 'ai-translate' || msg?.type === 'ai-define' || msg?.type === 'ai-assist' || msg?.type === 'ai-status') {
                 handleAiMessage(msg, (payload) => webviewPanel.webview.postMessage(payload));
             } else if (msg?.type === 'debug-log') {
                 // Forwarded from the webview's own console (see debugLog() in the
@@ -3918,7 +3918,48 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             },
             persistAnnotations: persistAnnotations,
             createAnnotationId: createAnnotationId,
-            get container() { return container; }
+            get container() { return container; },
+            get currentPage() { return currentPage; },
+            get totalPages() { return pdfDoc ? pdfDoc.numPages : 0; },
+            get fileName() { return displayFileName; },
+            pageTextPlain: async function (pageNum) {
+                const tc = await getPageText(pageNum);
+                var raw = (tc.items || []).map(function (it) { return it.str || ''; }).join(' ');
+                return raw.split('').reduce(function (acc, ch) {
+                    var code = ch.charCodeAt(0);
+                    var isWs = code <= 32;
+                    if (isWs) {
+                        if (acc.length && acc[acc.length - 1] !== ' ') acc += ' ';
+                        return acc;
+                    }
+                    return acc + ch;
+                }, '').trim();
+            },
+            pagesTextPlain: async function (fromPage, toPage) {
+                const start = Math.max(1, fromPage || 1);
+                const end = Math.min(pdfDoc ? pdfDoc.numPages : start, toPage || start);
+                const parts = [];
+                const nl = String.fromCharCode(10);
+                for (let p = start; p <= end; p++) {
+                    const t = await this.pageTextPlain(p);
+                    if (t) parts.push('--- Page ' + p + ' ---' + nl + t);
+                }
+                return parts.join(nl + nl);
+            },
+            selectionText: function () {
+                const sel = window.getSelection();
+                if (!sel || sel.isCollapsed) return '';
+                var raw = sel.toString();
+                return raw.split('').reduce(function (acc, ch) {
+                    var code = ch.charCodeAt(0);
+                    var isWs = code <= 32;
+                    if (isWs) {
+                        if (acc.length && acc[acc.length - 1] !== ' ') acc += ' ';
+                        return acc;
+                    }
+                    return acc + ch;
+                }, '').trim();
+            }
         };
 
         if (pdfjsLib) {

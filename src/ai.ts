@@ -368,6 +368,79 @@ export async function defineText(text: string): Promise<{
     throw new Error('No definition found. Select a single English word, or set an AI provider for phrases.');
 }
 
+
+const ASSIST_PROMPTS: Record<string, { system: string; user: (ctx: AssistContext) => string }> = {
+    summary: {
+        system: 'You summarize documents clearly and accurately. Use short paragraphs and bullet points where helpful. Plain text only.',
+        user: (c) => `Summarize this PDF content${c.meta ? ` (${c.meta})` : ''}:\n\n${c.text}`
+    },
+    'chapter-summary': {
+        system: 'You write concise chapter or section summaries. Plain text only.',
+        user: (c) => `Summarize this section/chapter${c.meta ? ` (${c.meta})` : ''}:\n\n${c.text}`
+    },
+    qa: {
+        system: 'Answer questions using only the provided document text. If the answer is not in the text, say so. Plain text only.',
+        user: (c) => `Document:\n${c.text}\n\nQuestion: ${c.question || ''}`
+    },
+    simplify: {
+        system: 'Rewrite text in plain, simple language a non-expert can understand. Keep meaning. Plain text only.',
+        user: (c) => `Simplify:\n\n${c.text}`
+    },
+    keypoints: {
+        system: 'Extract the most important key points as a short bullet list. Plain text only.',
+        user: (c) => `Extract key points from:\n\n${c.text}`
+    },
+    flashcards: {
+        system: 'Create study flashcards from the text. Format each as:\nQ: ...\nA: ...\n\nAim for 5-10 cards. Plain text only.',
+        user: (c) => `Create flashcards from:\n\n${c.text}`
+    },
+    quiz: {
+        system: 'Create a short quiz (5 multiple-choice questions) from the text. For each question list options A-D and mark the correct answer. Plain text only.',
+        user: (c) => `Create a quiz from:\n\n${c.text}`
+    },
+    citation: {
+        system: 'Suggest academic citations for the provided text. Prefer APA and MLA. If metadata is incomplete, note assumptions. Plain text only.',
+        user: (c) => `Generate citation suggestions for this material${c.meta ? ` (${c.meta})` : ''}:\n\n${c.text}`
+    },
+    chat: {
+        system: 'You are a helpful reading assistant for the open PDF. Use the document context when relevant. Be concise. Plain text only.',
+        user: (c) => {
+            const hist = (c.history || []).slice(-6).map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
+            return `Document context:\n${c.text}\n\n${hist ? 'Conversation:\n' + hist + '\n\n' : ''}User: ${c.question || ''}`;
+        }
+    }
+};
+
+export interface AssistContext {
+    text: string;
+    question?: string;
+    meta?: string;
+    history?: { role: 'user' | 'assistant'; content: string }[];
+}
+
+function truncateText(text: string, maxChars = 14000): string {
+    const t = text.trim();
+    if (t.length <= maxChars) return t;
+    return t.slice(0, maxChars) + '\n\n[…truncated…]';
+}
+
+export async function runAssist(action: string, ctx: AssistContext): Promise<{ text: string; provider: string; action: string }> {
+    const settings = await getAiSettings();
+    if (!isAiConfigured(settings)) {
+        throw new Error('Reading Assist needs an AI provider. Set pdfDisplay.ai.provider and run "PDF Display: Set AI API Key".');
+    }
+    const prompt = ASSIST_PROMPTS[action];
+    if (!prompt) throw new Error('Unknown assist action: ' + action);
+    const text = truncateText(ctx.text || '');
+    if (!text && action !== 'chat') throw new Error('No document text available for this action.');
+    if ((action === 'qa' || action === 'chat') && !(ctx.question || '').trim()) {
+        throw new Error('Enter a question first.');
+    }
+    if (action === 'simplify' && text.length < 2) throw new Error('Select text to simplify, or run on the current page.');
+    const out = await chatComplete(settings, prompt.system, prompt.user({ ...ctx, text }));
+    return { text: out, provider: settings.provider, action };
+}
+
 export async function handleAiMessage(
     msg: any,
     post: (payload: any) => Thenable<boolean>
@@ -386,21 +459,39 @@ export async function handleAiMessage(
             await post({ type: 'ai-define-result', requestId, ok: true, ...result });
             return;
         }
+        if (msg.type === 'ai-assist') {
+            const result = await runAssist(String(msg.action || ''), {
+                text: String(msg.text || ''),
+                question: msg.question ? String(msg.question) : undefined,
+                meta: msg.meta ? String(msg.meta) : undefined,
+                history: Array.isArray(msg.history) ? msg.history : undefined
+            });
+            await post({ type: 'ai-assist-result', requestId, ok: true, ...result });
+            return;
+        }
         if (msg.type === 'ai-status') {
             const s = await getAiSettings();
+            const cfg = vscode.workspace.getConfiguration('pdfDisplay.ai');
+            const enableAssist = cfg.get<boolean>('enableAssist') === true;
             await post({
                 type: 'ai-status-result',
                 requestId,
                 configured: isAiConfigured(s),
                 hasApiKey: Boolean(s.apiKey),
+                enableAssist,
                 provider: s.provider,
                 model: s.model || defaultModel(s.provider),
                 defaultTargetLang: s.defaultTargetLang
             });
         }
     } catch (e: any) {
+        const type =
+            msg.type === 'ai-translate' ? 'ai-translate-result'
+            : msg.type === 'ai-define' ? 'ai-define-result'
+            : msg.type === 'ai-assist' ? 'ai-assist-result'
+            : 'ai-status-result';
         await post({
-            type: msg.type === 'ai-translate' ? 'ai-translate-result' : msg.type === 'ai-define' ? 'ai-define-result' : 'ai-status-result',
+            type,
             requestId,
             ok: false,
             error: e?.message ?? String(e)

@@ -6,7 +6,9 @@
         ['ru', 'Russian'], ['it', 'Italian'], ['ko', 'Korean'], ['en', 'English']
     ];
 
-    let status = { configured: false, provider: 'none', defaultTargetLang: 'es' };
+    let status = { configured: false, enableAssist: false, provider: 'none', defaultTargetLang: 'es' };
+    let chatHistory = [];
+    let assistBusy = false;
     let lastTarget = 'es';
     let reqSeq = 0;
     let pending = {};
@@ -52,13 +54,15 @@
         if (msg.type === 'ai-status-result') {
             status = {
                 configured: !!msg.configured,
+                enableAssist: !!msg.enableAssist,
                 provider: msg.provider || 'none',
                 defaultTargetLang: msg.defaultTargetLang || 'es'
             };
             lastTarget = status.defaultTargetLang;
+            updateAssistVisibility();
             return;
         }
-        if (msg.type === 'ai-translate-result' || msg.type === 'ai-define-result') {
+        if (msg.type === 'ai-translate-result' || msg.type === 'ai-define-result' || msg.type === 'ai-assist-result') {
             const p = pending[msg.requestId];
             if (!p) return;
             delete pending[msg.requestId];
@@ -324,8 +328,168 @@
         hoverWord = '';
     }
 
+
+    function updateAssistVisibility() {
+        ensureAssistUi();
+        const fab = document.getElementById('ai-fab');
+        const panel = document.getElementById('ai-panel');
+        if (!fab) return;
+        const show = !!status.enableAssist;
+        fab.classList.toggle('visible', show);
+        if (!show && panel) {
+            panel.classList.remove('visible');
+        }
+        const sub = document.getElementById('ai-panel-sub');
+        if (sub) {
+            sub.textContent = status.configured
+                ? ((status.provider || 'ai') + (status.model ? ' · ready' : ''))
+                : 'Set provider + API key in Settings';
+        }
+    }
+
+    function ensureAssistUi() {
+        if (document.getElementById('ai-fab')) return;
+
+        const fab = document.createElement('button');
+        fab.type = 'button';
+        fab.id = 'ai-fab';
+        fab.title = 'Reading Assist';
+        fab.textContent = 'AI Assist';
+        fab.addEventListener('click', function () {
+            const panel = document.getElementById('ai-panel');
+            if (!panel) return;
+            panel.classList.toggle('visible');
+        });
+        document.body.appendChild(fab);
+
+        const panel = document.createElement('div');
+        panel.id = 'ai-panel';
+        panel.innerHTML =
+            '<div class="ai-panel-head">' +
+            '  <div><strong>Reading Assist</strong><div class="ai-sub" id="ai-panel-sub"></div></div>' +
+            '  <button type="button" class="ai-panel-close" title="Close" aria-label="Close">&times;</button>' +
+            '</div>' +
+            '<div class="ai-scope">Scope <select id="ai-scope">' +
+            '  <option value="page">Current page</option>' +
+            '  <option value="selection">Selection</option>' +
+            '  <option value="doc">Whole document (truncated)</option>' +
+            '</select></div>' +
+            '<div class="ai-actions-grid">' +
+            '  <button type="button" data-act="summary">PDF summary</button>' +
+            '  <button type="button" data-act="chapter-summary">Chapter summary</button>' +
+            '  <button type="button" data-act="keypoints">Key points</button>' +
+            '  <button type="button" data-act="simplify">Simplify</button>' +
+            '  <button type="button" data-act="flashcards">Flashcards</button>' +
+            '  <button type="button" data-act="quiz">Quiz</button>' +
+            '  <button type="button" data-act="citation">Citations</button>' +
+            '  <button type="button" data-act="qa">Ask (Q&amp;A)</button>' +
+            '</div>' +
+            '<div class="ai-out" id="ai-out"><span class="ai-muted">Pick an action. Only visible because Reading Assist is enabled in Settings.</span></div>' +
+            '<div class="ai-chat-row">' +
+            '  <input id="ai-chat-input" type="text" placeholder="Ask about this PDF…" />' +
+            '  <button type="button" id="ai-chat-send">Send</button>' +
+            '</div>';
+        document.body.appendChild(panel);
+
+        panel.querySelector('.ai-panel-close').addEventListener('click', function () {
+            panel.classList.remove('visible');
+        });
+        panel.querySelector('.ai-actions-grid').addEventListener('click', function (e) {
+            const btn = e.target.closest('button[data-act]');
+            if (!btn || assistBusy) return;
+            runAssistAction(btn.getAttribute('data-act'));
+        });
+        document.getElementById('ai-chat-send').addEventListener('click', function () {
+            runAssistAction('chat');
+        });
+        document.getElementById('ai-chat-input').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') runAssistAction('chat');
+        });
+    }
+
+    async function gatherScopeText(action) {
+        const host = window.__pdfDisplay;
+        if (!host) return { text: '', meta: '' };
+        const scopeEl = document.getElementById('ai-scope');
+        let scope = scopeEl ? scopeEl.value : 'page';
+        if (action === 'simplify') {
+            const sel = host.selectionText ? host.selectionText() : '';
+            if (sel) return { text: sel, meta: 'selected text' };
+            scope = 'page';
+        }
+        if (scope === 'selection') {
+            const sel = host.selectionText ? host.selectionText() : '';
+            if (!sel) throw new Error('Select text in the PDF first, or change scope to Current page.');
+            return { text: sel, meta: 'selected text' };
+        }
+        if (scope === 'doc') {
+            const total = host.totalPages || 1;
+            const maxPages = Math.min(total, 12);
+            const text = await host.pagesTextPlain(1, maxPages);
+            return { text: text, meta: host.fileName + ' · pages 1–' + maxPages + (total > maxPages ? ' (truncated)' : '') };
+        }
+        // page
+        const page = host.currentPage || 1;
+        const text = await host.pageTextPlain(page);
+        return { text: text, meta: (host.fileName || 'PDF') + ' · page ' + page };
+    }
+
+    function setAssistOut(html) {
+        const out = document.getElementById('ai-out');
+        if (out) out.innerHTML = html;
+    }
+
+    function setAssistBusy(busy) {
+        assistBusy = busy;
+        document.querySelectorAll('#ai-panel .ai-actions-grid button, #ai-chat-send').forEach(function (b) {
+            b.disabled = !!busy;
+        });
+    }
+
+    async function runAssistAction(action) {
+        if (!status.enableAssist) return;
+        if (!status.configured) {
+            setAssistOut('<p class="ai-error">Enable an AI provider in Settings (<code>pdfDisplay.ai.provider</code>) and run <strong>PDF Display: Set AI API Key</strong>.</p>');
+            return;
+        }
+        const input = document.getElementById('ai-chat-input');
+        const question = input ? input.value.trim() : '';
+        if ((action === 'qa' || action === 'chat') && !question) {
+            setAssistOut('<p class="ai-error">Type a question in the box below first.</p>');
+            if (input) input.focus();
+            return;
+        }
+
+        setAssistBusy(true);
+        setAssistOut('<p class="ai-muted">Working…</p>');
+        try {
+            const gathered = await gatherScopeText(action);
+            const payload = {
+                action: action,
+                text: gathered.text,
+                meta: gathered.meta,
+                question: question || undefined,
+                history: action === 'chat' ? chatHistory.slice(-6) : undefined
+            };
+            const res = await request('ai-assist', payload);
+            const body = escapeHtml(res.text || '');
+            setAssistOut('<div class="ai-muted" style="margin-bottom:8px">' + escapeHtml(res.provider || '') + (gathered.meta ? ' · ' + escapeHtml(gathered.meta) : '') + '</div><div>' + body + '</div>');
+            if (action === 'chat' || action === 'qa') {
+                if (question) chatHistory.push({ role: 'user', content: question });
+                chatHistory.push({ role: 'assistant', content: res.text || '' });
+                if (input) input.value = '';
+            }
+        } catch (e) {
+            setAssistOut('<p class="ai-error">' + escapeHtml(e.message || String(e)) + '</p>');
+        } finally {
+            setAssistBusy(false);
+        }
+    }
+
+
     function boot() {
         ensureUi();
+        ensureAssistUi();
         post({ type: 'ai-status', requestId: rid() });
 
         document.addEventListener('mouseup', function () {

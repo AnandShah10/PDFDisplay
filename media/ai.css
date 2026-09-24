@@ -159,3 +159,145 @@
 #ai-hover-tip.visible {
     display: block;
 }
+
+/* Reading Assist — only mounted when pdfDisplay.ai.enableAssist is true */
+
+#ai-fab {
+    position: fixed;
+    right: 16px;
+    bottom: 20px;
+    z-index: 280;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color, rgba(255,255,255,0.14));
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    display: none;
+}
+#ai-fab.visible { display: inline-flex; align-items: center; gap: 6px; }
+#ai-fab:hover { filter: brightness(1.08); }
+
+#ai-panel {
+    position: fixed;
+    top: 56px;
+    right: 12px;
+    bottom: 16px;
+    width: min(360px, calc(100vw - 24px));
+    z-index: 290;
+    display: none;
+    flex-direction: column;
+    background: var(--vscode-editorWidget-background, #252526);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+    overflow: hidden;
+}
+#ai-panel.visible { display: flex; }
+body.tools-bar-open #ai-panel { top: 100px; }
+body.markup-bar-open #ai-panel { top: 100px; }
+body.tools-bar-open.markup-bar-open #ai-panel { top: 144px; }
+
+#ai-panel .ai-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+}
+#ai-panel .ai-panel-head strong { font-size: 13px; }
+#ai-panel .ai-panel-head .ai-sub {
+    font-size: 11px;
+    color: var(--muted-text-color, #9a9a9a);
+}
+#ai-panel .ai-panel-close {
+    border: none;
+    background: transparent;
+    color: var(--muted-text-color, #aaa);
+    font-size: 18px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+#ai-panel .ai-actions-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+}
+#ai-panel .ai-actions-grid button {
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    background: transparent;
+    color: var(--text-color, #e0e0e0);
+    border-radius: 6px;
+    padding: 7px 8px;
+    font-size: 11.5px;
+    cursor: pointer;
+    text-align: left;
+}
+#ai-panel .ai-actions-grid button:hover {
+    background: var(--hover-bg, rgba(255,255,255,0.08));
+}
+#ai-panel .ai-actions-grid button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+#ai-panel .ai-scope {
+    padding: 8px 12px 0;
+    font-size: 11px;
+    color: var(--muted-text-color, #9a9a9a);
+}
+#ai-panel .ai-scope select {
+    margin-left: 6px;
+    font-size: 11px;
+    background: var(--input-bg, rgba(255,255,255,0.06));
+    color: var(--text-color, #ddd);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+#ai-panel .ai-out {
+    flex: 1;
+    overflow: auto;
+    padding: 12px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+#ai-panel .ai-out .ai-muted { color: var(--muted-text-color, #9a9a9a); }
+#ai-panel .ai-out .ai-error { color: var(--vscode-errorForeground, #f48771); }
+
+#ai-panel .ai-chat-row {
+    display: flex;
+    gap: 6px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border-color, rgba(255,255,255,0.08));
+}
+#ai-panel .ai-chat-row input {
+    flex: 1;
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    border-radius: 6px;
+    background: var(--input-bg, rgba(255,255,255,0.06));
+    color: var(--text-color, #e0e0e0);
+    padding: 7px 10px;
+    font-size: 12px;
+}
+#ai-panel .ai-chat-row button {
+    border: none;
+    border-radius: 6px;
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    padding: 0 12px;
+    font-size: 12px;
+    cursor: pointer;
+}

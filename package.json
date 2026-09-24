@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDFDisplay",
   "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.24",
+  "version": "0.0.25",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
@@ -417,6 +417,11 @@
           "type": "string",
           "default": "2024-06-01",
           "description": "Azure OpenAI API version query parameter (e.g. 2024-06-01, 2024-08-01-preview). Only used when provider is azure."
+        },
+        "pdfDisplay.ai.enableAssist": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the Reading Assist panel (summary, Q&A, flashcards, quiz, chatbot, \u2026). Hidden when false so the UI stays uncluttered. Requires an AI provider + API key for most actions."
         }
       }
     }
