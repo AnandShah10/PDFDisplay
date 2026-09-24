@@ -1,3 +1,7 @@
+## [0.0.30]
+- PDF Edit mode (feasible ops): watermark, page numbers, Bates IDs, page rotate/delete/duplicate/blank, background tint, band redaction, metadata sanitize.
+- Single **Edit…** entry (tools bar + Command Palette + editor title) to avoid UI clutter. Always saves a new file.
+
 ## [0.0.29]
 - Reading Assist panel: collapsible Tools section (more space for answers), resizable panel (left/bottom/corner), layout remembered for the session.
 

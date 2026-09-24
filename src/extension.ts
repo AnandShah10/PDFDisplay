@@ -4,6 +4,19 @@ import * as child_process from 'child_process';
 import * as path from 'path';
 import { PDFDocument, StandardFonts, rgb, PDFFont, BlendMode, LineCapStyle } from 'pdf-lib';
 import { handleAiMessage, registerAiKeyCommands } from './ai';
+import {
+    showEditMenu,
+    addTextWatermark,
+    addPageNumbers,
+    addBatesNumbers,
+    rotatePages,
+    deletePages,
+    insertBlankPage,
+    duplicatePage,
+    sanitizeMetadata,
+    addRedactionBoxes,
+    setPageBackground
+} from './pdfEdit';
 
 export function activate(context: vscode.ExtensionContext) {
     registerAiKeyCommands(context);
@@ -138,7 +151,62 @@ export function activate(context: vscode.ExtensionContext) {
         // Merge PDFs doesn't need any specific document open - it's a standalone
         // multi-file-picker operation, so it's registered directly rather than
         // routed through postToActivePanel (which requires an active PDF panel).
-        vscode.commands.registerCommand('pdfDisplay.mergePdfs', () => mergePdfs())
+vscode.commands.registerCommand('pdfDisplay.mergePdfs', () => mergePdfs()),
+        vscode.commands.registerCommand('pdfDisplay.editPdf', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await showEditMenu(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.addWatermark', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await addTextWatermark(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.addPageNumbers', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await addPageNumbers(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.addBatesNumbers', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await addBatesNumbers(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.rotatePages', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await rotatePages(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.deletePages', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await deletePages(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.insertBlankPage', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await insertBlankPage(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.duplicatePage', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await duplicatePage(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.sanitizeMetadata', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await sanitizeMetadata(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.redactBands', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await addRedactionBoxes(uri);
+        }),
+        vscode.commands.registerCommand('pdfDisplay.setPageBackground', async () => {
+            const uri = PdfViewerProvider.activeDocumentUri;
+            if (!uri) { vscode.window.showInformationMessage('Open a PDF first.'); return; }
+            await setPageBackground(uri);
+        })
     );
 }
 
@@ -231,6 +299,8 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             } else if (msg?.type === 'save-bookmarks') {
                 storeBookmarks(this.context, document.uri, Array.isArray(msg.bookmarks) ? msg.bookmarks : []);
+            } else if (msg?.type === 'edit-pdf') {
+                showEditMenu(document.uri);
             } else if (msg?.type === 'ai-translate' || msg?.type === 'ai-define' || msg?.type === 'ai-assist' || msg?.type === 'ai-status') {
                 handleAiMessage(msg, (payload) => webviewPanel.webview.postMessage(payload));
             } else if (msg?.type === 'debug-log') {
@@ -1419,6 +1489,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             <button id="merge-pdfs-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Merge multiple PDFs into one">Merge PDFs</button>
             <button id="split-pdf-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Split into multiple PDFs by page range" disabled>Split</button>
             <button id="compress-pdf-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Reduce PDF file size" disabled>Compress</button>
+            <button id="edit-pdf-btn" class="toolbar-btn text-btn tools-labeled-btn" title="Edit PDF (watermark, pages, metadata…)" disabled>Edit…</button>
         </div>
         <div class="tools-separator"></div>
         <div class="tools-group">
@@ -1577,6 +1648,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const mergePdfsBtn = document.getElementById('merge-pdfs-btn');
         const splitPdfBtn = document.getElementById('split-pdf-btn');
         const compressPdfBtn = document.getElementById('compress-pdf-btn');
+        const editPdfBtn = document.getElementById('edit-pdf-btn');
         const mergeAnnotationsBtn = document.getElementById('merge-annotations-btn');
         const exportImagesBtn = document.getElementById('export-images');
 
@@ -1808,7 +1880,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn, togglePageSelectBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, editPdfBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn, togglePageSelectBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -3343,6 +3415,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
 
         compressPdfBtn.addEventListener('click', () => {
             vscodeApi.postMessage({ type: 'compress-pdf' });
+        });
+        if (editPdfBtn) editPdfBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'edit-pdf' });
         });
 
         mergePdfsBtn.addEventListener('click', () => {
