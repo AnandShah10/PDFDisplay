@@ -15,11 +15,13 @@ import {
     duplicatePage,
     sanitizeMetadata,
     addRedactionBoxes,
-    setPageBackground
+    setPageBackground,
+    setOnPdfOverwritten
 } from './pdfEdit';
 
 export function activate(context: vscode.ExtensionContext) {
     registerAiKeyCommands(context);
+    setOnPdfOverwritten((uri) => PdfViewerProvider.reloadUri(uri));
     const provider = new PdfViewerProvider(context);
     context.subscriptions.push(vscode.window.registerCustomEditorProvider(
         PdfViewerProvider.viewType,
@@ -221,6 +223,14 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
     // extension-host side of things (export commands below) act on the right
     // document without needing a round trip through the webview at all.
     public static activeDocumentUri: vscode.Uri | undefined;
+
+    /** Per-document reload callbacks (re-read bytes + post to webview). */
+    public static reloaders = new Map<string, () => Promise<void>>();
+
+    public static async reloadUri(uri: vscode.Uri): Promise<void> {
+        const fn = PdfViewerProvider.reloaders.get(uri.toString());
+        if (fn) await fn();
+    }
 
     constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -427,6 +437,11 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
                     }
                 });
             }
+        });
+
+        PdfViewerProvider.reloaders.set(document.uri.toString(), loadAndSend);
+        webviewPanel.onDidDispose(() => {
+            PdfViewerProvider.reloaders.delete(document.uri.toString());
         });
 
         webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview, fileName, nonce);
@@ -1447,6 +1462,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         <button id="toggle-sidebar" class="toolbar-btn" title="Toggle thumbnails" disabled>&#9776;</button>
         <button id="toggle-search" class="toolbar-btn" title="Find in document (Ctrl/Cmd+F)" disabled>&#128269;</button>
         <button id="toggle-tools" class="toolbar-btn" title="Tools" disabled>&#9881;</button>
+        <button id="edit-pdf-main" class="toolbar-btn text-btn" title="Edit PDF (watermark, pages, metadata…)" disabled>Edit</button>
         <div class="title">📄 ${fileName}</div>
         <div class="toolbar-spacer"></div>
         <div class="toolbar-group" id="page-nav">
@@ -1649,6 +1665,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         const splitPdfBtn = document.getElementById('split-pdf-btn');
         const compressPdfBtn = document.getElementById('compress-pdf-btn');
         const editPdfBtn = document.getElementById('edit-pdf-btn');
+        const editPdfMainBtn = document.getElementById('edit-pdf-main');
         const mergeAnnotationsBtn = document.getElementById('merge-annotations-btn');
         const exportImagesBtn = document.getElementById('export-images');
 
@@ -1880,7 +1897,7 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
         }
 
         function enableToolbar() {
-            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, editPdfBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn, togglePageSelectBtn].forEach(el => el.disabled = false);
+            [prevPageBtn, nextPageBtn, pageInput, zoomOutBtn, zoomInBtn, zoomFitWidthBtn, toggleSidebarBtn, toggleSearchBtn, toggleToolsBtn, toggleAnnotateBtn, toggleBookmarksBtn, rotateViewBtn, togglePropertiesBtn, toggleTocBtn, toggleContrastBtn, copyPageBtn, copyImagesBtn, exportAnnotatedPdfBtn, exportAnnotationsBtn, toggleGitBtn, toggleDiffBtn, extractPagesBtn, splitPdfBtn, compressPdfBtn, editPdfBtn, editPdfMainBtn, mergeAnnotationsBtn, exportImagesBtn, viewModeContinuousBtn, viewModeSingleBtn, viewModeTwoBtn, togglePageSelectBtn].forEach(el => el.disabled = false);
         }
 
         toggleSidebarBtn.addEventListener('click', () => {
@@ -3417,6 +3434,9 @@ class PdfViewerProvider implements vscode.CustomReadonlyEditorProvider {
             vscodeApi.postMessage({ type: 'compress-pdf' });
         });
         if (editPdfBtn) editPdfBtn.addEventListener('click', () => {
+            vscodeApi.postMessage({ type: 'edit-pdf' });
+        });
+        if (editPdfMainBtn) editPdfMainBtn.addEventListener('click', () => {
             vscodeApi.postMessage({ type: 'edit-pdf' });
         });
 

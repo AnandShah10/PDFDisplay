@@ -14,14 +14,64 @@ async function loadDoc(uri: vscode.Uri): Promise<{ doc: PDFDocument; bytes: Uint
     return { doc, bytes };
 }
 
+/** Optional hook so the viewer can reload after an in-place overwrite. */
+let onPdfOverwritten: ((uri: vscode.Uri) => void | Promise<void>) | undefined;
+
+export function setOnPdfOverwritten(handler: (uri: vscode.Uri) => void | Promise<void>): void {
+    onPdfOverwritten = handler;
+}
+
+/**
+ * Ask how to save: overwrite the open file, or Save As a copy.
+ * Edits are intentional; overwrite requires an explicit confirmation.
+ */
 async function saveAs(uri: vscode.Uri, bytes: Uint8Array, suffix: string): Promise<vscode.Uri | undefined> {
+    const mode = await vscode.window.showQuickPick(
+        [
+            {
+                label: '$(save) Overwrite original',
+                description: uri.path.split(/[\\/]/).pop() || 'document.pdf',
+                detail: 'Replace the file you have open (single working copy)',
+                value: 'overwrite'
+            },
+            {
+                label: '$(save-as) Save as new file…',
+                description: suggestedName(uri, suffix),
+                detail: 'Keep the original unchanged',
+                value: 'copy'
+            }
+        ] as (vscode.QuickPickItem & { value: string })[],
+        { placeHolder: 'Save edited PDF', ignoreFocusOut: true }
+    );
+    if (!mode) return undefined;
+
+    if ((mode as any).value === 'overwrite') {
+        const ok = await vscode.window.showWarningMessage(
+            'Overwrite the original PDF on disk? This cannot be undone from the editor.',
+            { modal: true },
+            'Overwrite'
+        );
+        if (ok !== 'Overwrite') return undefined;
+        await vscode.workspace.fs.writeFile(uri, bytes);
+        vscode.window.showInformationMessage('PDF saved (original overwritten).');
+        try {
+            await onPdfOverwritten?.(uri);
+        } catch {
+            /* reload is best-effort */
+        }
+        return uri;
+    }
+
     const saveUri = await vscode.window.showSaveDialog({
         defaultUri: vscode.Uri.joinPath(uri, '..', suggestedName(uri, suffix)),
         filters: { PDF: ['pdf'] }
     });
     if (!saveUri) return undefined;
     await vscode.workspace.fs.writeFile(saveUri, bytes);
-    const choice = await vscode.window.showInformationMessage('Saved: ' + saveUri.fsPath.split(/[\\/]/).pop(), 'Open');
+    const choice = await vscode.window.showInformationMessage(
+        'Saved copy: ' + (saveUri.path.split(/[\\/]/).pop() || 'document.pdf'),
+        'Open'
+    );
     if (choice === 'Open') {
         vscode.commands.executeCommand('vscode.openWith', saveUri, 'pdfDisplay.pdfViewer');
     }

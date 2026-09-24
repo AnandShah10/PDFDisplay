@@ -2,7 +2,7 @@
   "name": "pdfDisplay",
   "displayName": "PDF Display",
   "description": "Fast PDF viewer and editor for VS Code: annotations, page extract/split/merge/compress, watermarks, page numbers, Bates IDs, rotate/delete/duplicate pages, metadata sanitize, optional AI reading assist, and Git-friendly annotation sidecars.",
-  "version": "0.0.30",
+  "version": "0.0.31",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",

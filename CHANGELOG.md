@@ -1,3 +1,7 @@
+## [0.0.31]
+- **Edit** button on the main toolbar (and Tools bar).
+- PDF edits can **Overwrite original** or **Save as new file** (was always a new file before). Viewer reloads after overwrite.
+
 ## [0.0.30]
 - PDF Edit mode (feasible ops): watermark, page numbers, Bates IDs, page rotate/delete/duplicate/blank, background tint, band redaction, metadata sanitize.
 - Single **Edit…** entry (tools bar + Command Palette + editor title) to avoid UI clutter. Always saves a new file.
