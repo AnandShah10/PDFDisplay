@@ -1,19 +1,54 @@
 {
   "name": "pdfDisplay",
-  "displayName": "PDFDisplay",
-  "description": "Fast, fully-featured PDF viewer for VS Code",
-  "version": "0.0.25",
+  "displayName": "PDF Display",
+  "description": "Fast PDF viewer and editor for VS Code: annotations (highlight, ink, shapes, signatures, sticky notes), page extract/split/merge/compress, export annotated PDFs, search, bookmarks, TOC, Git-friendly sidecars, and optional AI reading assist (translate, define, summarize, Q&A, flashcards).",
+  "version": "0.0.26",
   "publisher": "AnandShah",
   "repository": {
     "type": "git",
     "url": "https://github.com/AnandShah10/PDFDisplay.git"
+  },
+  "author": {
+    "name": "Anand Shah",
+    "url": "https://github.com/AnandShah10"
+  },
+  "keywords": [
+    "pdf",
+    "pdf viewer",
+    "pdf editor",
+    "pdf annotation",
+    "annotate",
+    "highlight",
+    "markup",
+    "sticky notes",
+    "signature",
+    "extract pages",
+    "split pdf",
+    "merge pdf",
+    "compress pdf",
+    "pdf toolkit",
+    "bookmarks",
+    "table of contents",
+    "search",
+    "pdf.js",
+    "pdf-lib",
+    "ai",
+    "translate",
+    "reading assist",
+    "documentation"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
   },
   "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Visualization",
+    "Formatters"
   ],
   "activationEvents": [
     "onCommand:pdfDisplay.openPdf",
@@ -124,12 +159,12 @@
       },
       {
         "command": "pdfDisplay.exportAnnotatedPdf",
-        "title": "PDF Display: Download Annotated PDF",
+        "title": "PDF Display: Export Annotated PDF",
         "icon": "$(save)"
       },
       {
         "command": "pdfDisplay.exportAnnotations",
-        "title": "PDF Display: Export Annotations as JSON",
+        "title": "PDF Display: Export Annotations (JSON)",
         "icon": "$(export)"
       },
       {
@@ -149,7 +184,7 @@
       },
       {
         "command": "pdfDisplay.extractPages",
-        "title": "PDF Display: Extract / Export Selected Pages",
+        "title": "PDF Display: Extract Pages",
         "icon": "$(files)"
       },
       {
@@ -169,12 +204,12 @@
       },
       {
         "command": "pdfDisplay.mergeAnnotationsIntoPdf",
-        "title": "PDF Display: Merge Annotations into PDF (Overwrite)",
+        "title": "PDF Display: Bake Annotations into PDF",
         "icon": "$(merge)"
       },
       {
         "command": "pdfDisplay.exportPagesAsImages",
-        "title": "PDF Display: Convert Pages to Images",
+        "title": "PDF Display: Export Pages as Images\u2026",
         "icon": "$(device-camera)"
       },
       {
@@ -424,6 +459,83 @@
           "description": "Show the Reading Assist panel (summary, Q&A, flashcards, quiz, chatbot, \u2026). Hidden when false so the UI stays uncluttered. Requires an AI provider + API key for most actions."
         }
       }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "pdfDisplay.extractPages",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.compressPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.splitPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.mergeAnnotationsIntoPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.exportAnnotatedPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.exportAnnotations",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.exportPagesAsImages",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer"
+        },
+        {
+          "command": "pdfDisplay.mergePdfs"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "pdfDisplay.toggleToolsBar",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "navigation"
+        },
+        {
+          "command": "pdfDisplay.exportAnnotatedPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@1"
+        },
+        {
+          "command": "pdfDisplay.mergeAnnotationsIntoPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@2"
+        },
+        {
+          "command": "pdfDisplay.extractPages",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@3"
+        },
+        {
+          "command": "pdfDisplay.splitPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@4"
+        },
+        {
+          "command": "pdfDisplay.compressPdf",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@5"
+        },
+        {
+          "command": "pdfDisplay.mergePdfs",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@6"
+        },
+        {
+          "command": "pdfDisplay.exportPagesAsImages",
+          "when": "activeCustomEditorId == pdfDisplay.pdfViewer",
+          "group": "pdfDisplay_edit@7"
+        }
+      ]
     }
   },
   "scripts": {

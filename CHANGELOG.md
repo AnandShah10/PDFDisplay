@@ -1,3 +1,7 @@
+## [0.0.26]
+- Package metadata: author **Anand Shah**, expanded description, marketplace keywords and categories.
+- PDF editing commands exposed in the editor title menu (extract, split, merge, compress, bake annotations, export).
+
 ## [0.0.25]
 - Reading Assist (summary, chapter summary, Q&A, simplify, flashcards, quiz, key points, citations, chatbot).
 - UI stays clean: panel + floating **AI Assist** chip only appear when `pdfDisplay.ai.enableAssist` is true (and AI provider is configured for generation).

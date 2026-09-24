@@ -2,7 +2,7 @@
 
 # 📄 PDF Display for VS Code
 
-**A fast, fully-featured, and clean PDF viewer directly within Visual Studio Code — now with Git integration, PDF toolkit, and diffing.**
+**A fast PDF viewer and editor for Visual Studio Code — annotations, page extract/split/merge/compress, Git-friendly sidecars, optional AI reading assist, and more.**
 
 [![Visual Studio Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098FF?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=AnandShah.pdfdisplay)
 [![Stars](https://img.shields.io/github/stars/AnandShah10/PDFDisplay?style=social)](https://github.com/AnandShah10/PDFDisplay/stargazers)
