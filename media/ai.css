@@ -190,8 +190,13 @@
     position: fixed;
     top: 52px;
     right: 14px;
-    bottom: 16px;
+    /* Default size — user can resize; height not locked to bottom */
     width: min(400px, calc(100vw - 28px));
+    height: min(560px, calc(100vh - 72px));
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 32px);
+    min-width: 280px;
+    min-height: 220px;
     z-index: 290;
     display: none;
     flex-direction: column;
@@ -201,11 +206,75 @@
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
     overflow: hidden;
     backdrop-filter: blur(8px);
+    box-sizing: border-box;
 }
 #ai-panel.visible { display: flex; }
 body.tools-bar-open #ai-panel { top: 96px; }
 body.markup-bar-open #ai-panel { top: 96px; }
 body.tools-bar-open.markup-bar-open #ai-panel { top: 140px; }
+
+/* Collapsible tools (scope + action grid) */
+#ai-panel .ai-tools {
+    flex-shrink: 0;
+    overflow: hidden;
+    max-height: 280px;
+    opacity: 1;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    transition: max-height 0.2s ease, opacity 0.15s ease, border-color 0.15s ease;
+}
+#ai-panel.tools-collapsed .ai-tools {
+    max-height: 0;
+    opacity: 0;
+    border-bottom-color: transparent;
+    pointer-events: none;
+}
+
+/* Resize handles — keep interaction on the panel edge only */
+#ai-panel .ai-resize {
+    position: absolute;
+    z-index: 5;
+    touch-action: none;
+}
+#ai-panel .ai-resize-left {
+    left: 0;
+    top: 12px;
+    bottom: 12px;
+    width: 6px;
+    cursor: ew-resize;
+}
+#ai-panel .ai-resize-bottom {
+    left: 12px;
+    right: 12px;
+    bottom: 0;
+    height: 6px;
+    cursor: ns-resize;
+}
+#ai-panel .ai-resize-corner {
+    right: 0;
+    bottom: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+}
+#ai-panel .ai-resize-corner::after {
+    content: '';
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid rgba(255, 255, 255, 0.25);
+    border-bottom: 2px solid rgba(255, 255, 255, 0.25);
+}
+body.ai-resizing {
+    cursor: grabbing !important;
+    user-select: none !important;
+}
+body.ai-resizing iframe,
+body.ai-resizing canvas,
+body.ai-resizing .text-layer {
+    pointer-events: none !important;
+}
 
 #ai-panel .ai-panel-head {
     display: flex;
@@ -290,7 +359,6 @@ body.tools-bar-open.markup-bar-open #ai-panel { top: 140px; }
     grid-template-columns: 1fr 1fr;
     gap: 6px;
     padding: 8px 12px 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 #ai-panel .ai-actions-grid button {
     display: flex;
@@ -327,7 +395,8 @@ body.tools-bar-open.markup-bar-open #ai-panel { top: 140px; }
 }
 
 #ai-panel .ai-out {
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0; /* critical so flex child can scroll inside fixed-height panel */
     overflow: auto;
     padding: 14px 16px;
     font-size: 13px;
@@ -427,6 +496,7 @@ body.tools-bar-open.markup-bar-open #ai-panel { top: 140px; }
 #ai-panel .ai-chat-row {
     display: flex;
     gap: 8px;
+    flex-shrink: 0;
     padding: 12px 12px 14px;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(0, 0, 0, 0.15);

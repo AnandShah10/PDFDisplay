@@ -454,40 +454,77 @@
             '    <div><strong>Reading Assist</strong><div class="ai-sub" id="ai-panel-sub">Ready</div></div>' +
             '  </div>' +
             '  <div class="ai-panel-head-actions">' +
+            '    <button type="button" class="ai-icon-btn" id="ai-toggle-tools" title="Show / hide tools">Tools</button>' +
             '    <button type="button" class="ai-icon-btn" id="ai-copy-out" title="Copy answer">Copy</button>' +
             '    <button type="button" class="ai-icon-btn ai-panel-close" title="Close" aria-label="Close">&times;</button>' +
             '  </div>' +
             '</div>' +
-            '<div class="ai-scope-row">' +
-            '  <label>Scope</label>' +
-            '  <select id="ai-scope">' +
-            '    <option value="page">Current page</option>' +
-            '    <option value="selection">Selection</option>' +
-            '    <option value="doc" selected>Whole document</option>' +
-            '  </select>' +
-            '</div>' +
-            '<div class="ai-actions-grid">' +
-            '  <button type="button" data-act="summary"><span class="ai-act-icon">Σ</span><span>Summary</span></button>' +
-            '  <button type="button" data-act="chapter-summary"><span class="ai-act-icon">§</span><span>Chapter</span></button>' +
-            '  <button type="button" data-act="keypoints"><span class="ai-act-icon">✦</span><span>Key points</span></button>' +
-            '  <button type="button" data-act="simplify"><span class="ai-act-icon">Aa</span><span>Simplify</span></button>' +
-            '  <button type="button" data-act="flashcards"><span class="ai-act-icon">▣</span><span>Flashcards</span></button>' +
-            '  <button type="button" data-act="quiz"><span class="ai-act-icon">?</span><span>Quiz</span></button>' +
-            '  <button type="button" data-act="citation"><span class="ai-act-icon">”</span><span>Cite</span></button>' +
-            '  <button type="button" data-act="qa"><span class="ai-act-icon">💬</span><span>Ask</span></button>' +
+            '<div class="ai-tools" id="ai-tools">' +
+            '  <div class="ai-scope-row">' +
+            '    <label>Scope</label>' +
+            '    <select id="ai-scope">' +
+            '      <option value="page">Current page</option>' +
+            '      <option value="selection">Selection</option>' +
+            '      <option value="doc" selected>Whole document</option>' +
+            '    </select>' +
+            '  </div>' +
+            '  <div class="ai-actions-grid">' +
+            '    <button type="button" data-act="summary"><span class="ai-act-icon">Σ</span><span>Summary</span></button>' +
+            '    <button type="button" data-act="chapter-summary"><span class="ai-act-icon">§</span><span>Chapter</span></button>' +
+            '    <button type="button" data-act="keypoints"><span class="ai-act-icon">✦</span><span>Key points</span></button>' +
+            '    <button type="button" data-act="simplify"><span class="ai-act-icon">Aa</span><span>Simplify</span></button>' +
+            '    <button type="button" data-act="flashcards"><span class="ai-act-icon">▣</span><span>Flashcards</span></button>' +
+            '    <button type="button" data-act="quiz"><span class="ai-act-icon">?</span><span>Quiz</span></button>' +
+            '    <button type="button" data-act="citation"><span class="ai-act-icon">”</span><span>Cite</span></button>' +
+            '    <button type="button" data-act="qa"><span class="ai-act-icon">💬</span><span>Ask</span></button>' +
+            '  </div>' +
             '</div>' +
             '<div class="ai-out" id="ai-out">' +
             '  <div class="ai-empty">' +
             '    <div class="ai-empty-title">Ask the document</div>' +
-            '    <div class="ai-muted">Pick an action above, or type a question below. Answers use full-document retrieval when scope is Whole document.</div>' +
+            '    <div class="ai-muted">Pick an action above, or type a question below. Collapse Tools to free space for long answers. Drag edges to resize.</div>' +
             '  </div>' +
             '</div>' +
             '<div class="ai-chat-row">' +
             '  <input id="ai-chat-input" type="text" placeholder="Ask anything about this PDF…" autocomplete="off" />' +
             '  <button type="button" id="ai-chat-send" title="Send">Send</button>' +
-            '</div>';
-
+            '</div>' +
+            '<div class="ai-resize ai-resize-left" data-edge="left" title="Drag to resize"></div>' +
+            '<div class="ai-resize ai-resize-bottom" data-edge="bottom" title="Drag to resize"></div>' +
+            '<div class="ai-resize ai-resize-corner" data-edge="corner" title="Drag to resize"></div>';
         document.body.appendChild(panel);
+
+        // Restore size from session if available
+        try {
+            var saved = sessionStorage.getItem('pdfDisplay.aiPanel');
+            if (saved) {
+                var sz = JSON.parse(saved);
+                if (sz.w) panel.style.width = Math.min(Math.max(sz.w, 280), window.innerWidth - 24) + 'px';
+                if (sz.h) panel.style.height = Math.min(Math.max(sz.h, 220), window.innerHeight - 48) + 'px';
+                if (sz.toolsCollapsed) panel.classList.add('tools-collapsed');
+            }
+        } catch (e) { /* ignore */ }
+
+        function savePanelLayout() {
+            try {
+                sessionStorage.setItem('pdfDisplay.aiPanel', JSON.stringify({
+                    w: panel.offsetWidth,
+                    h: panel.offsetHeight,
+                    toolsCollapsed: panel.classList.contains('tools-collapsed')
+                }));
+            } catch (e) { /* ignore */ }
+        }
+
+        function setToolsCollapsed(collapsed) {
+            panel.classList.toggle('tools-collapsed', !!collapsed);
+            var btn = document.getElementById('ai-toggle-tools');
+            if (btn) {
+                btn.textContent = collapsed ? 'Tools ▾' : 'Tools ▴';
+                btn.title = collapsed ? 'Show tools' : 'Hide tools';
+            }
+            savePanelLayout();
+        }
+        setToolsCollapsed(panel.classList.contains('tools-collapsed'));
 
         panel.querySelector('.ai-panel-close').addEventListener('click', function () {
             panel.classList.remove('visible');
@@ -498,6 +535,56 @@
             var t = out ? (out.innerText || '') : '';
             if (t && navigator.clipboard) navigator.clipboard.writeText(t);
         });
+        var toolsBtn = document.getElementById('ai-toggle-tools');
+        if (toolsBtn) toolsBtn.addEventListener('click', function () {
+            setToolsCollapsed(!panel.classList.contains('tools-collapsed'));
+        });
+
+        // Resize: left / bottom / corner handles (panel is anchored top-right)
+        var resizing = null;
+        function onResizeMove(e) {
+            if (!resizing) return;
+            e.preventDefault();
+            var rect = panel.getBoundingClientRect();
+            var minW = 280, minH = 220;
+            var maxW = Math.max(minW, window.innerWidth - 16);
+            var maxH = Math.max(minH, window.innerHeight - 40);
+            if (resizing === 'left' || resizing === 'corner') {
+                // right edge stays fixed; width grows leftward
+                var right = window.innerWidth - rect.right;
+                var newW = window.innerWidth - right - e.clientX;
+                newW = Math.min(maxW, Math.max(minW, newW));
+                panel.style.width = newW + 'px';
+                panel.style.right = Math.max(8, right) + 'px';
+            }
+            if (resizing === 'bottom' || resizing === 'corner') {
+                var top = rect.top;
+                var newH = e.clientY - top;
+                newH = Math.min(maxH - top + 8, Math.max(minH, newH));
+                panel.style.height = newH + 'px';
+                panel.style.top = Math.max(8, top) + 'px';
+                panel.style.bottom = 'auto';
+            }
+        }
+        function onResizeEnd() {
+            if (!resizing) return;
+            resizing = null;
+            document.body.classList.remove('ai-resizing');
+            window.removeEventListener('pointermove', onResizeMove);
+            window.removeEventListener('pointerup', onResizeEnd);
+            savePanelLayout();
+        }
+        panel.querySelectorAll('.ai-resize').forEach(function (handle) {
+            handle.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                resizing = handle.getAttribute('data-edge');
+                document.body.classList.add('ai-resizing');
+                window.addEventListener('pointermove', onResizeMove);
+                window.addEventListener('pointerup', onResizeEnd);
+            });
+        });
+
         panel.querySelector('.ai-actions-grid').addEventListener('click', function (e) {
             const btn = e.target.closest('button[data-act]');
             if (!btn || assistBusy) return;
@@ -509,6 +596,7 @@
         document.getElementById('ai-chat-input').addEventListener('keydown', function (e) {
             if (e.key === 'Enter') runAssistAction('chat');
         });
+
     }
 
     async function gatherScopeText(action, question) {
@@ -652,6 +740,13 @@
                 (res.passes ? '<span class="ai-pill ai-pill-muted">' + res.passes + ' passes</span>' : '') +
                 '</div>';
             setAssistOut(meta + formatAssistMarkdown(res.text || ''));
+            // Free vertical space for reading long answers
+            var pnl = document.getElementById('ai-panel');
+            if (pnl && !pnl.classList.contains('tools-collapsed')) {
+                pnl.classList.add('tools-collapsed');
+                var tb = document.getElementById('ai-toggle-tools');
+                if (tb) { tb.textContent = 'Tools ▾'; tb.title = 'Show tools'; }
+            }
             if (action === 'chat' || action === 'qa') {
                 if (question) chatHistory.push({ role: 'user', content: question });
                 chatHistory.push({ role: 'assistant', content: res.text || '' });

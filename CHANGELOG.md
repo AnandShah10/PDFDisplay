@@ -1,3 +1,6 @@
+## [0.0.29]
+- Reading Assist panel: collapsible Tools section (more space for answers), resizable panel (left/bottom/corner), layout remembered for the session.
+
 ## [0.0.28]
 - Reading Assist: fixed host timeout (6 min for AI jobs); progress bar during map-reduce; max 5 stratified batches.
 - Redesigned Assist panel UI + markdown-formatted answers (headings, lists, Q/A, copy button).
